@@ -1,0 +1,48 @@
+[package]
+name = "git-xet-server"
+version = "0.1.0"
+edition = "2021"
+description = "A secure Git-Xet server using pure Rust libraries"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+hyper = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async utilities
+async-trait = "0.1"
+futures = "0.3"
+bytes = "1"
+tokio-util = { version = "0.7", features = ["io"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Hashing and crypto
+blake3 = "1.5"
+sha1 = "0.10"
+sha2 = "0.10"
+
+# Compression (for pack files)
+flate2 = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+parking_lot = "0.12"
+dashmap = "6"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
