@@ -1,25 +1,20 @@
-mod auth;
+mod api;
 mod cas;
 mod error;
-mod handlers;
-mod lfs;
-mod pack;
-mod protocol;
-mod storage;
+mod git;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
     extract::DefaultBodyLimit,
-    routing::{delete, get, post, put},
+    routing::{delete, get, post},
     Router,
 };
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use auth::{Permissions, User};
-use handlers::AppState;
+use api::{AppState, Permissions, User};
 
 #[tokio::main]
 async fn main() {
@@ -53,16 +48,16 @@ async fn main() {
     // Build router - specific routes first, then wildcard
     let app = Router::new()
         // API endpoints (must come before wildcard)
-        .route("/api/repos", get(handlers::list_repos))
-        .route("/api/repos/:repo", post(handlers::create_repo))
-        .route("/api/repos/:repo", delete(handlers::delete_repo))
-        .route("/api/repos/:repo/refs", get(handlers::list_refs))
-        .route("/api/auth/login", post(handlers::login))
-        .route("/api/cas/stats", get(handlers::cas_stats))
+        .route("/api/repos", get(api::list_repos))
+        .route("/api/repos/:repo", post(api::create_repo))
+        .route("/api/repos/:repo", delete(api::delete_repo))
+        .route("/api/repos/:repo/refs", get(api::list_refs))
+        .route("/api/auth/login", post(api::login))
+        .route("/api/cas/stats", get(api::cas_stats))
         // Health check
-        .route("/health", get(handlers::health))
+        .route("/health", get(api::health))
         // Git Smart HTTP + LFS endpoints (wildcard - catches remaining paths)
-        .route("/*repo", get(handlers::wildcard_get).post(handlers::wildcard_post).put(handlers::wildcard_put))
+        .route("/*repo", get(api::wildcard_get).post(api::wildcard_post).put(api::wildcard_put))
         .with_state(state)
         // Allow large file uploads (10GB limit)
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024 * 1024))

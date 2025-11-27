@@ -9,15 +9,15 @@ use axum::{
     body::Body,
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::Response,
     Json,
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{AuthManager, Token};
-use crate::cas::{CasStore, Chunk, ContentHash, Chunker};
-use crate::handlers::AppState;
+use super::auth::{AuthManager, Token};
+use super::handlers::AppState;
+use crate::cas::ContentHash;
 
 /// LFS Batch Request
 #[derive(Debug, Deserialize)]

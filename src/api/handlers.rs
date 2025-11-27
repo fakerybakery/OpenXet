@@ -3,19 +3,19 @@ use std::sync::Arc;
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::{header, HeaderMap, Request, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
 use serde::Deserialize;
 
-use crate::auth::{AuthManager, Token};
+use super::auth::{AuthManager, Token};
 use crate::cas::CasStore;
-use crate::error::{Result, ServerError};
-use crate::protocol::{
+use crate::error::ServerError;
+use crate::git::{
     generate_ref_advertisement, handle_receive_pack, handle_upload_pack, GitService,
+    RepositoryStore,
 };
-use crate::storage::RepositoryStore;
 
 /// Application state shared across handlers
 pub struct AppState {
@@ -90,7 +90,7 @@ pub async fn wildcard_get(
         if parts.len() == 2 {
             let repo = parts[0].to_string();
             let oid = parts[1].to_string();
-            return crate::lfs::lfs_download(
+            return super::lfs::lfs_download(
                 State(state),
                 Path((repo, oid)),
                 headers,
@@ -120,7 +120,7 @@ pub async fn wildcard_put(
         if parts.len() == 2 {
             let repo = parts[0].to_string();
             let oid = parts[1].to_string();
-            return crate::lfs::lfs_upload(
+            return super::lfs::lfs_upload(
                 State(state),
                 Path((repo, oid)),
                 headers,
@@ -161,7 +161,7 @@ pub async fn wildcard_post(
         // Parse JSON body
         match serde_json::from_slice(&body) {
             Ok(request) => {
-                return crate::lfs::lfs_batch(
+                return super::lfs::lfs_batch(
                     State(state),
                     Path(repo_path.to_string()),
                     headers,
@@ -183,7 +183,7 @@ pub async fn wildcard_post(
         let repo_path = path.trim_end_matches("/info/lfs/verify");
         match serde_json::from_slice(&body) {
             Ok(request) => {
-                return crate::lfs::lfs_verify(
+                return super::lfs::lfs_verify(
                     State(state),
                     Path(repo_path.to_string()),
                     headers,

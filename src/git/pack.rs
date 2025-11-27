@@ -7,7 +7,7 @@ use flate2::Compression;
 use sha1::{Digest, Sha1};
 
 use crate::error::{Result, ServerError};
-use crate::storage::{GitObject, ObjectId, ObjectType, Repository};
+use super::storage::{GitObject, ObjectId, ObjectType, Repository};
 
 /// Pack file object types (as per Git pack format)
 #[repr(u8)]

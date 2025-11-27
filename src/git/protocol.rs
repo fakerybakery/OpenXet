@@ -1,10 +1,8 @@
-use std::sync::Arc;
-
 use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::error::{Result, ServerError};
-use crate::pack::{generate_pack, parse_pack, pktline};
-use crate::storage::{GitObject, ObjectId, ObjectType, Repository};
+use super::pack::{generate_pack, parse_pack, pktline};
+use super::storage::{GitObject, ObjectId, ObjectType, Repository};
 
 /// Git protocol capabilities
 pub const CAPABILITIES: &[&str] = &[
