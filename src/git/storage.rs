@@ -1,3 +1,9 @@
+//! Git object storage module.
+//!
+//! Provides in-memory storage for Git objects, refs, and repositories.
+
+#![allow(dead_code)] // Many methods are part of the public API but not yet used internally
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -338,7 +344,8 @@ mod tests {
         let data = b"hello world";
         let id = ObjectId::from_bytes(data);
         let hex = id.to_hex();
-        assert_eq!(hex.len(), 64);
+        // Git uses SHA-1 which is 20 bytes = 40 hex chars
+        assert_eq!(hex.len(), 40);
 
         let parsed = ObjectId::from_hex(&hex).unwrap();
         assert_eq!(id, parsed);

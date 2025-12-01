@@ -3,6 +3,8 @@
 //! This implements the Git LFS Batch API (https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md)
 //! and bridges large file storage to our CAS (Content Addressable Storage) backend.
 
+#![allow(dead_code)] // Some fields are part of the LFS protocol but not used internally
+
 use std::sync::Arc;
 
 use axum::{
@@ -12,7 +14,6 @@ use axum::{
     response::Response,
     Json,
 };
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use super::auth::{AuthManager, Token};
@@ -278,18 +279,31 @@ fn process_upload_object(
     }
 }
 
-/// PUT /:repo/info/lfs/objects/:oid - Upload LFS object
+/// PUT /:repo/info/lfs/objects/:oid - Upload LFS object (streaming)
+///
+/// This handler streams the upload directly to disk without loading
+/// the entire file into memory. Hash verification happens during streaming.
+/// After the raw file is written, it's queued for background chunking/dedup.
 pub async fn lfs_upload(
     State(state): State<Arc<AppState>>,
     Path((repo, oid)): Path<(String, String)>,
     headers: HeaderMap,
-    body: Bytes,
+    request: axum::extract::Request,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
     let token = extract_auth(&headers, &state.auth);
 
-    let body_len = body.len();
-    tracing::info!("LFS upload starting: repo={} oid={} size={}", repo_name, oid, body_len);
+    // Get content-length if available (for logging)
+    let content_length = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    tracing::info!(
+        "LFS upload starting (streaming): repo={} oid={} expected_size={}",
+        repo_name, oid, content_length
+    );
 
     // Check write permission
     if let Err(e) = state.auth.check_permission(token.as_ref(), repo_name, true) {
@@ -300,72 +314,150 @@ pub async fn lfs_upload(
             .unwrap();
     }
 
-    // Verify the OID matches the content (do in blocking task for large files)
-    let body_clone = body.clone();
-    let oid_clone = oid.clone();
-    let hash_result = tokio::task::spawn_blocking(move || {
-        let computed_hash = ContentHash::from_data(&body_clone);
-        (computed_hash, computed_hash.to_hex() == oid_clone)
-    })
-    .await;
-
-    let (computed_hash, hash_matches) = match hash_result {
-        Ok(result) => result,
-        Err(e) => {
-            tracing::error!("Hash computation failed: {}", e);
+    // Parse the expected OID
+    let expected_hash = match ContentHash::from_hex(&oid) {
+        Some(h) => h,
+        None => {
             return Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from("Hash computation failed"))
+                .status(StatusCode::BAD_REQUEST)
+                .header(header::CONTENT_TYPE, "application/vnd.git-lfs+json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "Invalid OID format"
+                    })
+                    .to_string(),
+                ))
                 .unwrap();
         }
     };
 
-    if !hash_matches {
-        tracing::warn!("OID mismatch: expected {}, got {}", oid, computed_hash.to_hex());
-        return Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .header(header::CONTENT_TYPE, "application/vnd.git-lfs+json")
-            .body(Body::from(
-                serde_json::json!({
-                    "message": format!("OID mismatch: expected {}, got {}", oid, computed_hash.to_hex())
-                })
-                .to_string(),
-            ))
-            .unwrap();
+    // Get raw file path
+    let raw_path = state.cas.raw_object_path(&expected_hash);
+
+    // Stream body to file while computing hash
+    let body_stream = request.into_body();
+
+    match stream_to_file_with_hash(body_stream, &raw_path).await {
+        Ok((computed_hash, total_size)) => {
+            // Verify hash matches
+            if computed_hash != expected_hash {
+                // Clean up the file
+                let _ = tokio::fs::remove_file(&raw_path).await;
+
+                tracing::warn!(
+                    "OID mismatch: expected {}, got {}",
+                    expected_hash.to_hex(),
+                    computed_hash.to_hex()
+                );
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header(header::CONTENT_TYPE, "application/vnd.git-lfs+json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "message": format!(
+                                "OID mismatch: expected {}, got {}",
+                                expected_hash.to_hex(),
+                                computed_hash.to_hex()
+                            )
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap();
+            }
+
+            // Register with CAS
+            state.cas.register_raw_object(expected_hash, total_size, raw_path);
+
+            // Queue for background chunking/deduplication
+            state.queue_for_processing(expected_hash);
+
+            tracing::info!(
+                "LFS object stored raw (streaming): oid={} size={} - queued for background processing",
+                oid,
+                total_size
+            );
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .body(Body::empty())
+                .unwrap()
+        }
+        Err(e) => {
+            // Clean up partial file
+            let _ = tokio::fs::remove_file(&raw_path).await;
+
+            tracing::error!("LFS upload failed: {}", e);
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(header::CONTENT_TYPE, "application/vnd.git-lfs+json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": format!("Upload failed: {}", e)
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        }
     }
-
-    // Store in CAS with chunking for deduplication (also in blocking task)
-    let state_clone = state.clone();
-    let store_result = tokio::task::spawn_blocking(move || {
-        state_clone.cas.store_lfs_object(computed_hash, body)
-    })
-    .await;
-
-    let chunk_hashes = match store_result {
-        Ok(hashes) => hashes,
-        Err(e) => {
-            tracing::error!("Storage failed: {}", e);
-            return Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from("Storage failed"))
-                .unwrap();
-        }
-    };
-
-    tracing::info!(
-        "LFS object stored: oid={} size={} chunks={}",
-        oid,
-        body_len,
-        chunk_hashes.len()
-    );
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .body(Body::empty())
-        .unwrap()
 }
 
-/// GET /:repo/info/lfs/objects/:oid - Download LFS object
+/// Stream request body to file while computing SHA-256 hash
+/// Returns (computed_hash, total_bytes_written)
+async fn stream_to_file_with_hash(
+    body: axum::body::Body,
+    path: &std::path::Path,
+) -> Result<(ContentHash, u64), String> {
+    use futures::StreamExt;
+    use sha2::{Sha256, Digest};
+    use tokio::io::AsyncWriteExt;
+
+    // Create parent directory if needed
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+
+    let mut file = tokio::fs::File::create(path)
+        .await
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+
+    let mut hasher = Sha256::new();
+    let mut total_written = 0u64;
+
+    let mut stream = http_body_util::BodyStream::new(body);
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|e| format!("Error reading body: {}", e))?;
+        let data = chunk.into_data().map_err(|_| "Failed to get frame data")?;
+
+        // Update hash
+        hasher.update(&data);
+
+        // Write to file
+        file.write_all(&data)
+            .await
+            .map_err(|e| format!("Failed to write to file: {}", e))?;
+
+        total_written += data.len() as u64;
+    }
+
+    file.sync_all()
+        .await
+        .map_err(|e| format!("Failed to sync file: {}", e))?;
+
+    // Compute final hash
+    let result = hasher.finalize();
+    let mut hash_bytes = [0u8; 32];
+    hash_bytes.copy_from_slice(&result);
+
+    Ok((ContentHash::from_raw(hash_bytes), total_written))
+}
+
+/// GET /:repo/info/lfs/objects/:oid - Download LFS object (streaming)
+///
+/// Streams the object from disk without loading it entirely into memory.
+/// Works with both raw (not yet chunked) and chunked objects.
 pub async fn lfs_download(
     State(state): State<Arc<AppState>>,
     Path((repo, oid)): Path<(String, String)>,
@@ -374,7 +466,7 @@ pub async fn lfs_download(
     let repo_name = repo.trim_end_matches(".git");
     let token = extract_auth(&headers, &state.auth);
 
-    tracing::debug!("LFS download: repo={} oid={}", repo_name, oid);
+    tracing::debug!("LFS download (streaming): repo={} oid={}", repo_name, oid);
 
     // Check read permission
     if let Err(e) = state.auth.check_permission(token.as_ref(), repo_name, false) {
@@ -385,7 +477,7 @@ pub async fn lfs_download(
             .unwrap();
     }
 
-    // Get from CAS
+    // Parse OID
     let hash = match ContentHash::from_hex(&oid) {
         Some(h) => h,
         None => {
@@ -396,13 +488,54 @@ pub async fn lfs_download(
         }
     };
 
-    match state.cas.get_lfs_object(&hash) {
-        Some(data) => Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/octet-stream")
-            .header(header::CONTENT_LENGTH, data.len().to_string())
-            .body(Body::from(data))
-            .unwrap(),
+    // Get object size for Content-Length header
+    let size = match state.cas.get_lfs_object_size(&hash) {
+        Some(s) => s,
+        None => {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header(header::CONTENT_TYPE, "application/vnd.git-lfs+json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "Object not found"
+                    })
+                    .to_string(),
+                ))
+                .unwrap();
+        }
+    };
+
+    // Get the source for streaming
+    match state.cas.get_lfs_object_path(&hash) {
+        Some(crate::cas::store::LfsObjectSource::RawFile(path)) => {
+            // Stream from raw file
+            match stream_file_response(path, size).await {
+                Ok(response) => response,
+                Err(e) => {
+                    tracing::error!("Failed to stream file: {}", e);
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::from("Failed to read file"))
+                        .unwrap()
+                }
+            }
+        }
+        Some(crate::cas::store::LfsObjectSource::Chunks(_chunk_hashes)) => {
+            // Stream from chunks - for now, reconstruct in memory
+            // TODO: Implement true streaming from chunks
+            match state.cas.get_lfs_object(&hash) {
+                Some(data) => Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/octet-stream")
+                    .header(header::CONTENT_LENGTH, data.len().to_string())
+                    .body(Body::from(data))
+                    .unwrap(),
+                None => Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("Failed to reconstruct object"))
+                    .unwrap(),
+            }
+        }
         None => Response::builder()
             .status(StatusCode::NOT_FOUND)
             .header(header::CONTENT_TYPE, "application/vnd.git-lfs+json")
@@ -414,6 +547,25 @@ pub async fn lfs_download(
             ))
             .unwrap(),
     }
+}
+
+/// Stream a file as HTTP response
+async fn stream_file_response(
+    path: std::path::PathBuf,
+    size: u64,
+) -> Result<Response, std::io::Error> {
+    use tokio_util::io::ReaderStream;
+
+    let file = tokio::fs::File::open(&path).await?;
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_LENGTH, size.to_string())
+        .body(body)
+        .unwrap())
 }
 
 /// POST /:repo/info/lfs/verify - Verify uploaded object

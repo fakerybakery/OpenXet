@@ -10,26 +10,49 @@ use bytes::Bytes;
 use serde::Deserialize;
 
 use super::auth::{AuthManager, Token};
-use crate::cas::CasStore;
+use crate::cas::{CasStore, ContentHash};
 use crate::error::ServerError;
 use crate::git::{
     generate_ref_advertisement, handle_receive_pack, handle_upload_pack, GitService,
     RepositoryStore,
 };
+use tokio::sync::mpsc;
 
 /// Application state shared across handlers
 pub struct AppState {
     pub repos: RepositoryStore,
-    pub cas: CasStore,
+    pub cas: Arc<CasStore>,
     pub auth: AuthManager,
+    /// Channel to queue objects for background processing
+    pub process_tx: mpsc::UnboundedSender<ContentHash>,
 }
 
 impl AppState {
     pub fn new() -> Self {
+        Self::with_storage_path(std::env::temp_dir().join("git-xet-cas"))
+    }
+
+    pub fn with_storage_path(storage_path: std::path::PathBuf) -> Self {
+        // Create CasStore with Arc for sharing
+        let cas = Arc::new(CasStore::with_storage_path(storage_path));
+
+        // Start background worker for chunking/deduplication
+        let process_tx = CasStore::start_background_worker(cas.clone());
+
+        tracing::info!("Background CAS processing worker started");
+
         Self {
             repos: RepositoryStore::new(),
-            cas: CasStore::new(),
+            cas,
             auth: AuthManager::new(),
+            process_tx,
+        }
+    }
+
+    /// Queue an object for background processing
+    pub fn queue_for_processing(&self, oid: ContentHash) {
+        if self.process_tx.send(oid).is_err() {
+            tracing::error!("Failed to queue object for background processing");
         }
     }
 }
@@ -105,14 +128,16 @@ pub async fn wildcard_get(
         .unwrap()
 }
 
-/// Wildcard PUT handler - routes LFS uploads
+/// Wildcard PUT handler - routes LFS uploads (streaming)
 pub async fn wildcard_put(
     State(state): State<Arc<AppState>>,
     Path(path): Path<String>,
-    headers: HeaderMap,
-    body: Bytes,
+    request: axum::extract::Request,
 ) -> Response {
     tracing::debug!("wildcard_put: path={}", path);
+
+    // Extract headers before consuming request
+    let headers = request.headers().clone();
 
     // LFS upload: {repo}/info/lfs/objects/{oid}
     if path.contains("/info/lfs/objects/") {
@@ -124,7 +149,7 @@ pub async fn wildcard_put(
                 State(state),
                 Path((repo, oid)),
                 headers,
-                body,
+                request,
             ).await;
         }
     }

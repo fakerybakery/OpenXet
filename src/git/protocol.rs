@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_generate_ref_advertisement() {
-        let repo = crate::storage::Repository::new("test".to_string());
+        let repo = crate::git::storage::Repository::new("test".to_string());
         let adv = generate_ref_advertisement(&repo, GitService::UploadPack);
 
         // Should contain service line

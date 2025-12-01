@@ -1,3 +1,9 @@
+//! Authentication and authorization module.
+//!
+//! Provides user management, permission checking, and token-based auth.
+
+#![allow(dead_code)] // Many methods are part of the public API but not yet used internally
+
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
