@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
+use sea_orm::DatabaseConnection;
 use serde::Deserialize;
 
 use super::auth::{AuthManager, Token};
@@ -51,6 +52,34 @@ impl AppState {
             auth: AuthManager::new(),
             process_tx,
         }
+    }
+
+    /// Create AppState with database connection for persistence
+    pub async fn with_db(storage_path: std::path::PathBuf, db: Arc<DatabaseConnection>) -> crate::error::Result<Self> {
+        // Create CasStore with database connection
+        let mut cas = CasStore::with_storage_path(storage_path.clone());
+        cas.set_db(db.clone());
+        cas.load_from_db().await?;
+        let cas = Arc::new(cas);
+
+        // Create RepositoryStore with database connection
+        let repos = RepositoryStore::with_db(storage_path.clone(), db);
+
+        // Load existing repositories from database
+        repos.load_from_db().await?;
+
+        // Start background worker for chunking/deduplication
+        let process_tx = CasStore::start_background_worker(cas.clone());
+
+        tracing::info!("Background CAS processing worker started");
+        tracing::info!("Storage path: {:?}", storage_path);
+
+        Ok(Self {
+            repos,
+            cas,
+            auth: AuthManager::new(),
+            process_tx,
+        })
     }
 
     /// Queue an object for background processing

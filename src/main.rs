@@ -1,8 +1,10 @@
 mod api;
 mod cas;
+mod db;
 mod error;
 mod git;
 mod storage;
+mod web_ui; // Optional: remove this line to disable web UI
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -34,8 +36,20 @@ async fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir().join("git-xet-storage"));
 
-    // Create application state with configured storage path
-    let state = Arc::new(AppState::with_storage_path(storage_path));
+    // Initialize database
+    let db_path = storage_path.join("git-xet.db");
+    let db = db::init_database(&db_path)
+        .await
+        .expect("Failed to initialize database");
+    let db = Arc::new(db);
+    tracing::info!("Database initialized at {:?}", db_path);
+
+    // Create application state with database connection
+    let state = Arc::new(
+        AppState::with_db(storage_path, db)
+            .await
+            .expect("Failed to create application state")
+    );
 
     // Add default admin user (in production, load from config/env)
     state.auth.add_user(
@@ -49,11 +63,18 @@ async fn main() {
             .with_global_permissions(Permissions::read_only()),
     );
 
-    // Create a sample repository
-    let _ = state.repos.create_repo("sample");
+    // Create a sample repository if none exist
+    if state.repos.list_repos().is_empty() {
+        let _ = state.repos.create_repo("sample");
+        tracing::info!("Sample repository 'sample' created");
+    } else {
+        tracing::info!("Loaded {} repositories from database", state.repos.list_repos().len());
+    }
 
     // Build router - specific routes first, then wildcard
     let app = Router::new()
+        // Web UI (Optional: remove .merge() line to disable web UI)
+        .merge(web_ui::router())
         // API endpoints (must come before wildcard)
         .route("/api/repos", get(api::list_repos))
         .route("/api/repos/:repo", post(api::create_repo))
@@ -74,11 +95,12 @@ async fn main() {
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
     tracing::info!("Git-Xet Server starting on http://{}", addr);
     tracing::info!("Default credentials: admin/admin (full access), demo/demo (read-only)");
-    tracing::info!("Sample repository 'sample' created");
     tracing::info!("");
     tracing::info!("Usage:");
     tracing::info!("  Clone: git clone http://admin:admin@localhost:8080/sample.git");
     tracing::info!("  Push:  git push http://admin:admin@localhost:8080/sample.git main");
+    tracing::info!("");
+    tracing::info!("Web UI: http://{}/", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

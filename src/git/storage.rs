@@ -1,7 +1,8 @@
 //! Git object storage module.
 //!
 //! Provides disk-backed storage for Git objects, refs, and repositories.
-//! Only metadata is kept in memory; objects are stored on disk.
+//! Refs and repository metadata are persisted in SQLite.
+//! Objects are stored on disk via storage backend.
 
 #![allow(dead_code)] // Many methods are part of the public API but not yet used internally
 
@@ -12,8 +13,10 @@ use std::sync::Arc;
 use bytes::Bytes;
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use sha1::{Digest, Sha1};
 
+use crate::db::entities::{git_object, git_ref, repository};
 use crate::error::{Result, ServerError};
 use crate::storage::{namespaces, StorageBackend, StorageConfig};
 
@@ -130,8 +133,9 @@ pub struct GitRef {
     pub symbolic_target: Option<String>,
 }
 
-/// Disk-backed Git repository
-/// Objects are stored on disk via storage backend; only refs are in memory.
+/// Disk-backed Git repository with SQLite persistence
+/// Objects are stored on disk via storage backend.
+/// Refs and object index are cached in memory and persisted to SQLite.
 pub struct Repository {
     pub name: String,
     storage: Arc<dyn StorageBackend>,
@@ -140,18 +144,24 @@ pub struct Repository {
     refs: RwLock<HashMap<String, GitRef>>,
     head: RwLock<String>,
     storage_path: PathBuf,
+    /// Database connection for persistence
+    db: Option<Arc<DatabaseConnection>>,
 }
 
 impl Repository {
     pub fn new(name: String) -> Self {
-        Self::with_storage_config(name, StorageConfig::default())
+        Self::with_storage_config(name, StorageConfig::default(), None)
     }
 
     pub fn with_storage_path(name: String, storage_path: PathBuf) -> Self {
-        Self::with_storage_config(name, StorageConfig::local(storage_path))
+        Self::with_storage_config(name, StorageConfig::local(storage_path), None)
     }
 
-    pub fn with_storage_config(name: String, config: StorageConfig) -> Self {
+    pub fn with_db(name: String, storage_path: PathBuf, db: Arc<DatabaseConnection>) -> Self {
+        Self::with_storage_config(name, StorageConfig::local(storage_path), Some(db))
+    }
+
+    pub fn with_storage_config(name: String, config: StorageConfig, db: Option<Arc<DatabaseConnection>>) -> Self {
         let storage_path = match &config.storage_type {
             crate::storage::StorageType::Local { path } => path.clone(),
             crate::storage::StorageType::S3(_) => std::env::temp_dir().join("git-xet-cache"),
@@ -169,11 +179,17 @@ impl Repository {
             refs: RwLock::new(HashMap::new()),
             head: RwLock::new("refs/heads/main".to_string()),
             storage_path,
+            db,
         };
 
         // Create initial empty tree and commit
         repo.initialize_empty();
         repo
+    }
+
+    /// Set database connection (used when loading from existing repo)
+    pub fn set_db(&mut self, db: Arc<DatabaseConnection>) {
+        self.db = Some(db);
     }
 
     fn initialize_empty(&self) {
@@ -246,6 +262,30 @@ impl Repository {
 
         // Add to index
         self.object_index.insert(id, type_code);
+
+        // Persist to database (fire-and-forget in sync context)
+        if let Some(db) = &self.db {
+            let db = db.clone();
+            let repo_name = self.name.clone();
+            let obj_hash = id.to_hex();
+            let obj_id = format!("{}/{}", repo_name, obj_hash);
+            tokio::spawn(async move {
+                let model = git_object::ActiveModel {
+                    id: Set(obj_id),
+                    repo_name: Set(repo_name),
+                    object_hash: Set(obj_hash),
+                    object_type: Set(type_code as i32),
+                };
+                let _ = git_object::Entity::insert(model)
+                    .on_conflict(
+                        sea_orm::sea_query::OnConflict::column(git_object::Column::Id)
+                            .do_nothing()
+                            .to_owned()
+                    )
+                    .exec(&*db)
+                    .await;
+            });
+        }
     }
 
     /// Store an object in the repository
@@ -321,6 +361,34 @@ impl Repository {
                 symbolic_target: None,
             },
         );
+
+        // Persist to database
+        if let Some(db) = &self.db {
+            let db = db.clone();
+            let repo_name = self.name.clone();
+            let ref_name = name.to_string();
+            let ref_id = format!("{}/{}", repo_name, ref_name);
+            let target_hash = target.to_hex();
+            tokio::spawn(async move {
+                let model = git_ref::ActiveModel {
+                    id: Set(ref_id.clone()),
+                    repo_name: Set(repo_name),
+                    ref_name: Set(ref_name),
+                    target_hash: Set(target_hash),
+                    is_symbolic: Set(false),
+                    symbolic_target: Set(None),
+                };
+                // Use insert or update
+                let _ = git_ref::Entity::insert(model)
+                    .on_conflict(
+                        sea_orm::sea_query::OnConflict::column(git_ref::Column::Id)
+                            .update_columns([git_ref::Column::TargetHash])
+                            .to_owned()
+                    )
+                    .exec(&*db)
+                    .await;
+            });
+        }
         Ok(())
     }
 
@@ -328,6 +396,17 @@ impl Repository {
     pub fn delete_ref(&self, name: &str) -> Result<()> {
         let mut refs = self.refs.write();
         refs.remove(name);
+
+        // Persist to database
+        if let Some(db) = &self.db {
+            let db = db.clone();
+            let repo_name = self.name.clone();
+            let ref_name = name.to_string();
+            let ref_id = format!("{}/{}", repo_name, ref_name);
+            tokio::spawn(async move {
+                let _ = git_ref::Entity::delete_by_id(ref_id).exec(&*db).await;
+            });
+        }
         Ok(())
     }
 
@@ -364,12 +443,137 @@ impl Repository {
     pub fn object_count(&self) -> usize {
         self.object_index.len()
     }
+
+    /// Parse a commit object and extract the tree hash
+    pub fn get_commit_tree(&self, commit_id: &ObjectId) -> Option<ObjectId> {
+        let obj = self.get_object(commit_id)?;
+        if obj.object_type != ObjectType::Commit {
+            return None;
+        }
+
+        // Commit format: "tree <hex>\n..."
+        let data = std::str::from_utf8(&obj.data).ok()?;
+        let tree_line = data.lines().find(|l| l.starts_with("tree "))?;
+        let tree_hex = tree_line.strip_prefix("tree ")?;
+        ObjectId::from_hex(tree_hex)
+    }
+
+    /// Parse a tree object and return its entries
+    pub fn parse_tree(&self, tree_id: &ObjectId) -> Option<Vec<TreeEntry>> {
+        let obj = self.get_object(tree_id)?;
+        if obj.object_type != ObjectType::Tree {
+            return None;
+        }
+
+        let mut entries = Vec::new();
+        let data = &obj.data;
+        let mut pos = 0;
+
+        while pos < data.len() {
+            // Find space after mode
+            let space_pos = data[pos..].iter().position(|&b| b == b' ')?;
+            let mode_bytes = &data[pos..pos + space_pos];
+            let mode = std::str::from_utf8(mode_bytes).ok()?;
+
+            pos += space_pos + 1;
+
+            // Find null after name
+            let null_pos = data[pos..].iter().position(|&b| b == 0)?;
+            let name_bytes = &data[pos..pos + null_pos];
+            let name = std::str::from_utf8(name_bytes).ok()?.to_string();
+
+            pos += null_pos + 1;
+
+            // Next 20 bytes are the SHA-1 hash
+            if pos + 20 > data.len() {
+                break;
+            }
+            let mut hash_bytes = [0u8; 20];
+            hash_bytes.copy_from_slice(&data[pos..pos + 20]);
+            let oid = ObjectId::from_raw(hash_bytes);
+
+            pos += 20;
+
+            let is_dir = mode == "40000" || mode == "040000";
+            let is_executable = mode == "100755";
+            let is_symlink = mode == "120000";
+
+            entries.push(TreeEntry {
+                name,
+                oid,
+                mode: mode.to_string(),
+                is_dir,
+                is_executable,
+                is_symlink,
+            });
+        }
+
+        // Sort: directories first, then alphabetically
+        entries.sort_by(|a, b| {
+            match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.cmp(&b.name),
+            }
+        });
+
+        Some(entries)
+    }
+
+    /// Get blob content as string (for text files)
+    pub fn get_blob_content(&self, blob_id: &ObjectId) -> Option<Vec<u8>> {
+        let obj = self.get_object(blob_id)?;
+        if obj.object_type != ObjectType::Blob {
+            return None;
+        }
+        Some(obj.data.to_vec())
+    }
+
+    /// Navigate to a path within a tree and return the object ID
+    pub fn resolve_path(&self, tree_id: &ObjectId, path: &str) -> Option<(ObjectId, bool)> {
+        if path.is_empty() || path == "/" {
+            return Some((*tree_id, true)); // Root is always a directory
+        }
+
+        let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+        let mut current_tree = *tree_id;
+
+        for (i, part) in parts.iter().enumerate() {
+            let entries = self.parse_tree(&current_tree)?;
+            let entry = entries.iter().find(|e| e.name == *part)?;
+
+            if i == parts.len() - 1 {
+                // Last component - return it
+                return Some((entry.oid, entry.is_dir));
+            } else {
+                // Not the last - must be a directory
+                if !entry.is_dir {
+                    return None;
+                }
+                current_tree = entry.oid;
+            }
+        }
+
+        None
+    }
 }
 
-/// Repository storage manager
+/// A tree entry (file or subdirectory)
+#[derive(Clone, Debug)]
+pub struct TreeEntry {
+    pub name: String,
+    pub oid: ObjectId,
+    pub mode: String,
+    pub is_dir: bool,
+    pub is_executable: bool,
+    pub is_symlink: bool,
+}
+
+/// Repository storage manager with SQLite persistence
 pub struct RepositoryStore {
     repos: DashMap<String, Arc<Repository>>,
     storage_path: PathBuf,
+    db: Option<Arc<DatabaseConnection>>,
 }
 
 impl RepositoryStore {
@@ -377,6 +581,7 @@ impl RepositoryStore {
         Self {
             repos: DashMap::new(),
             storage_path: std::env::temp_dir().join("git-xet-storage"),
+            db: None,
         }
     }
 
@@ -384,7 +589,85 @@ impl RepositoryStore {
         Self {
             repos: DashMap::new(),
             storage_path: path,
+            db: None,
         }
+    }
+
+    pub fn with_db(storage_path: PathBuf, db: Arc<DatabaseConnection>) -> Self {
+        Self {
+            repos: DashMap::new(),
+            storage_path,
+            db: Some(db),
+        }
+    }
+
+    /// Load all repositories from database (call at startup)
+    pub async fn load_from_db(&self) -> Result<()> {
+        let db = match &self.db {
+            Some(db) => db,
+            None => return Ok(()), // No database configured
+        };
+
+        // Load all repositories
+        let repos = repository::Entity::find().all(&**db).await
+            .map_err(|e| ServerError::Internal(format!("Failed to load repos: {}", e)))?;
+
+        for repo_model in repos {
+            let name = repo_model.name.clone();
+
+            // Create repository with database connection
+            let mut repo = Repository::with_storage_path(
+                name.clone(),
+                self.storage_path.clone(),
+            );
+            repo.set_db(db.clone());
+
+            // Load refs for this repository
+            let refs = git_ref::Entity::find()
+                .filter(git_ref::Column::RepoName.eq(&name))
+                .all(&**db)
+                .await
+                .map_err(|e| ServerError::Internal(format!("Failed to load refs: {}", e)))?;
+
+            // Populate refs
+            {
+                let mut refs_map = repo.refs.write();
+                for ref_model in refs {
+                    if let Some(target) = ObjectId::from_hex(&ref_model.target_hash) {
+                        refs_map.insert(
+                            ref_model.ref_name.clone(),
+                            GitRef {
+                                name: ref_model.ref_name,
+                                target,
+                                is_symbolic: ref_model.is_symbolic,
+                                symbolic_target: ref_model.symbolic_target,
+                            },
+                        );
+                    }
+                }
+            }
+
+            // Set HEAD
+            *repo.head.write() = repo_model.head;
+
+            // Load object index for this repository
+            let objects = git_object::Entity::find()
+                .filter(git_object::Column::RepoName.eq(&name))
+                .all(&**db)
+                .await
+                .map_err(|e| ServerError::Internal(format!("Failed to load objects: {}", e)))?;
+
+            for obj in objects {
+                if let Some(id) = ObjectId::from_hex(&obj.object_hash) {
+                    repo.object_index.insert(id, obj.object_type as u8);
+                }
+            }
+
+            self.repos.insert(name, Arc::new(repo));
+        }
+
+        tracing::info!("Loaded {} repositories from database", self.repos.len());
+        Ok(())
     }
 
     /// Create a new repository
@@ -393,11 +676,45 @@ impl RepositoryStore {
             return Err(ServerError::RepoAlreadyExists(name.to_string()));
         }
 
-        let repo = Arc::new(Repository::with_storage_path(
-            name.to_string(),
-            self.storage_path.clone(),
-        ));
+        let repo = if let Some(db) = &self.db {
+            Arc::new(Repository::with_db(
+                name.to_string(),
+                self.storage_path.clone(),
+                db.clone(),
+            ))
+        } else {
+            Arc::new(Repository::with_storage_path(
+                name.to_string(),
+                self.storage_path.clone(),
+            ))
+        };
+
         self.repos.insert(name.to_string(), repo.clone());
+
+        // Persist to database
+        if let Some(db) = &self.db {
+            let db = db.clone();
+            let name = name.to_string();
+            tokio::spawn(async move {
+                let model = repository::ActiveModel {
+                    name: Set(name),
+                    head: Set("refs/heads/main".to_string()),
+                    created_at: Set(std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64),
+                };
+                let _ = repository::Entity::insert(model)
+                    .on_conflict(
+                        sea_orm::sea_query::OnConflict::column(repository::Column::Name)
+                            .do_nothing()
+                            .to_owned()
+                    )
+                    .exec(&*db)
+                    .await;
+            });
+        }
+
         Ok(repo)
     }
 
@@ -411,13 +728,26 @@ impl RepositoryStore {
 
     /// Get or create a repository
     pub fn get_or_create_repo(&self, name: &str) -> Arc<Repository> {
-        let storage_path = self.storage_path.clone();
-        self.repos
-            .entry(name.to_string())
-            .or_insert_with(|| {
-                Arc::new(Repository::with_storage_path(name.to_string(), storage_path))
-            })
-            .clone()
+        if let Some(repo) = self.repos.get(name) {
+            return repo.clone();
+        }
+
+        // Create new repo
+        match self.create_repo(name) {
+            Ok(repo) => repo,
+            Err(_) => {
+                // Race condition - another thread created it, get it
+                self.repos.get(name).map(|r| r.clone()).unwrap_or_else(|| {
+                    // Fallback: create without persistence
+                    let repo = Arc::new(Repository::with_storage_path(
+                        name.to_string(),
+                        self.storage_path.clone(),
+                    ));
+                    self.repos.insert(name.to_string(), repo.clone());
+                    repo
+                })
+            }
+        }
     }
 
     /// Delete a repository
@@ -425,6 +755,16 @@ impl RepositoryStore {
         self.repos
             .remove(name)
             .ok_or_else(|| ServerError::RepoNotFound(name.to_string()))?;
+
+        // Delete from database
+        if let Some(db) = &self.db {
+            let db = db.clone();
+            let name = name.to_string();
+            tokio::spawn(async move {
+                let _ = repository::Entity::delete_by_id(name).exec(&*db).await;
+            });
+        }
+
         Ok(())
     }
 

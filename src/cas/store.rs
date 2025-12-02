@@ -2,11 +2,13 @@
 //!
 //! Provides chunking, deduplication, and storage for large files.
 //! Data is stored on disk via a pluggable storage backend (not in memory).
+//! Metadata is persisted to SQLite database.
 
 #![allow(dead_code)] // Many methods are part of the public API but not yet used internally
 
 use bytes::Bytes;
 use dashmap::DashMap;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::PathBuf;
@@ -15,6 +17,7 @@ use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
+use crate::db::entities::{lfs_object, lfs_chunk, cas_chunk};
 use crate::error::{Result, ServerError};
 use crate::storage::{namespaces, StorageBackend, StorageConfig};
 
@@ -403,7 +406,7 @@ impl ReconstructionStream {
 /// Content-Addressable Storage backend with streaming and background processing.
 ///
 /// Data is stored on disk via the storage backend, not in memory.
-/// Only metadata (hashes, sizes) is kept in memory.
+/// Metadata (hashes, sizes, LFS objects) is cached in memory and persisted to SQLite.
 pub struct CasStore {
     /// Storage backend for persisting data
     storage: Arc<dyn StorageBackend>,
@@ -423,6 +426,8 @@ pub struct CasStore {
     process_tx: Option<mpsc::UnboundedSender<ContentHash>>,
     /// Counter for objects pending processing
     pending_count: AtomicU64,
+    /// Database connection for persistence
+    db: Option<Arc<DatabaseConnection>>,
 }
 
 impl CasStore {
@@ -455,6 +460,7 @@ impl CasStore {
             storage_path,
             process_tx: None,
             pending_count: AtomicU64::new(0),
+            db: None,
         }
     }
 
@@ -475,7 +481,82 @@ impl CasStore {
             storage_path,
             process_tx: None,
             pending_count: AtomicU64::new(0),
+            db: None,
         }
+    }
+
+    /// Set database connection and load data from it
+    pub fn set_db(&mut self, db: Arc<DatabaseConnection>) {
+        self.db = Some(db);
+    }
+
+    /// Load LFS objects from database (call at startup)
+    pub async fn load_from_db(&self) -> Result<()> {
+        let db = match &self.db {
+            Some(db) => db,
+            None => return Ok(()), // No database configured
+        };
+
+        // Load LFS objects
+        let lfs_objs = lfs_object::Entity::find().all(&**db).await
+            .map_err(|e| ServerError::Internal(format!("Failed to load LFS objects: {}", e)))?;
+
+        for obj in lfs_objs {
+            if let Some(oid) = ContentHash::from_hex(&obj.oid) {
+                let status = match obj.status {
+                    0 => LfsObjectStatus::Raw,
+                    1 => LfsObjectStatus::Processing,
+                    2 => LfsObjectStatus::Chunked,
+                    _ => LfsObjectStatus::Raw,
+                };
+
+                // Load chunk hashes if chunked
+                let chunk_hashes = if status == LfsObjectStatus::Chunked {
+                    let chunks = lfs_chunk::Entity::find()
+                        .filter(lfs_chunk::Column::LfsOid.eq(&obj.oid))
+                        .order_by_asc(lfs_chunk::Column::ChunkIndex)
+                        .all(&**db)
+                        .await
+                        .map_err(|e| ServerError::Internal(format!("Failed to load chunks: {}", e)))?;
+
+                    let hashes: Vec<ContentHash> = chunks
+                        .into_iter()
+                        .filter_map(|c| ContentHash::from_hex(&c.chunk_hash))
+                        .collect();
+
+                    if hashes.is_empty() { None } else { Some(hashes) }
+                } else {
+                    None
+                };
+
+                self.lfs_objects.insert(oid, LfsObjectMeta {
+                    status,
+                    size: obj.size as u64,
+                    raw_path: obj.raw_path.map(PathBuf::from),
+                    chunk_hashes,
+                });
+            }
+        }
+
+        // Load CAS chunks (for deduplication index)
+        let chunks = cas_chunk::Entity::find().all(&**db).await
+            .map_err(|e| ServerError::Internal(format!("Failed to load chunks: {}", e)))?;
+
+        for chunk in chunks {
+            if let Some(hash) = ContentHash::from_hex(&chunk.hash) {
+                self.chunk_index.insert(hash, chunk.size as u64);
+            }
+        }
+
+        // Note: Block metadata is stored on disk with the block data
+        // We load the chunk index for deduplication and the LFS objects for status tracking
+
+        tracing::info!(
+            "Loaded {} LFS objects, {} chunks from database",
+            self.lfs_objects.len(),
+            self.chunk_index.len()
+        );
+        Ok(())
     }
 
     /// Get the storage backend
@@ -550,10 +631,33 @@ impl CasStore {
             LfsObjectMeta {
                 status: LfsObjectStatus::Raw,
                 size,
-                raw_path: Some(path),
+                raw_path: Some(path.clone()),
                 chunk_hashes: None,
             },
         );
+
+        // Persist to database
+        if let Some(db) = &self.db {
+            let db = db.clone();
+            let oid_hex = oid.to_hex();
+            let path_str = path.to_string_lossy().to_string();
+            tokio::spawn(async move {
+                let model = lfs_object::ActiveModel {
+                    oid: Set(oid_hex),
+                    size: Set(size as i64),
+                    status: Set(0), // Raw
+                    raw_path: Set(Some(path_str)),
+                };
+                let _ = lfs_object::Entity::insert(model)
+                    .on_conflict(
+                        sea_orm::sea_query::OnConflict::column(lfs_object::Column::Oid)
+                            .do_nothing()
+                            .to_owned()
+                    )
+                    .exec(&*db)
+                    .await;
+            });
+        }
 
         // Note: Background processing is queued by the caller via AppState.queue_for_processing()
         // This avoids the need for interior mutability in CasStore
@@ -931,10 +1035,33 @@ impl CasStore {
             LfsObjectMeta {
                 status: LfsObjectStatus::Raw,
                 size: total_written,
-                raw_path: Some(raw_path),
+                raw_path: Some(raw_path.clone()),
                 chunk_hashes: None,
             },
         );
+
+        // Persist to database
+        if let Some(db) = &self.db {
+            let db = db.clone();
+            let oid_hex = oid.to_hex();
+            let path_str = raw_path.to_string_lossy().to_string();
+            tokio::spawn(async move {
+                let model = lfs_object::ActiveModel {
+                    oid: Set(oid_hex),
+                    size: Set(total_written as i64),
+                    status: Set(0), // Raw
+                    raw_path: Set(Some(path_str)),
+                };
+                let _ = lfs_object::Entity::insert(model)
+                    .on_conflict(
+                        sea_orm::sea_query::OnConflict::column(lfs_object::Column::Oid)
+                            .do_nothing()
+                            .to_owned()
+                    )
+                    .exec(&*db)
+                    .await;
+            });
+        }
 
         tracing::info!(
             "LFS object {} stored raw ({} bytes), queuing for background processing",
@@ -966,10 +1093,33 @@ impl CasStore {
             LfsObjectMeta {
                 status: LfsObjectStatus::Raw,
                 size,
-                raw_path: Some(raw_path),
+                raw_path: Some(raw_path.clone()),
                 chunk_hashes: None,
             },
         );
+
+        // Persist to database
+        if let Some(db) = &self.db {
+            let db = db.clone();
+            let oid_hex = oid.to_hex();
+            let path_str = raw_path.to_string_lossy().to_string();
+            tokio::spawn(async move {
+                let model = lfs_object::ActiveModel {
+                    oid: Set(oid_hex),
+                    size: Set(size as i64),
+                    status: Set(0), // Raw
+                    raw_path: Set(Some(path_str)),
+                };
+                let _ = lfs_object::Entity::insert(model)
+                    .on_conflict(
+                        sea_orm::sea_query::OnConflict::column(lfs_object::Column::Oid)
+                            .do_nothing()
+                            .to_owned()
+                    )
+                    .exec(&*db)
+                    .await;
+            });
+        }
 
         // Queue for background processing
         self.queue_for_processing(oid);
@@ -1000,6 +1150,19 @@ impl CasStore {
             meta.status = LfsObjectStatus::Processing;
         }
 
+        // Update database status to processing
+        if let Some(db) = &self.db {
+            let db = db.clone();
+            let oid_hex = oid.to_hex();
+            tokio::spawn(async move {
+                let _ = lfs_object::Entity::update_many()
+                    .col_expr(lfs_object::Column::Status, sea_orm::sea_query::Expr::value(1))
+                    .filter(lfs_object::Column::Oid.eq(&oid_hex))
+                    .exec(&*db)
+                    .await;
+            });
+        }
+
         // Open raw file and chunk it with streaming
         let file = std::fs::File::open(&raw_path).map_err(|e| {
             ServerError::Internal(format!("Failed to open raw file: {}", e))
@@ -1012,6 +1175,33 @@ impl CasStore {
             meta.status = LfsObjectStatus::Chunked;
             meta.raw_path = None;
             meta.chunk_hashes = Some(chunk_hashes.clone());
+        }
+
+        // Update database to chunked status and store chunk hashes
+        if let Some(db) = &self.db {
+            let db = db.clone();
+            let oid_hex = oid.to_hex();
+            let chunk_hashes_clone = chunk_hashes.clone();
+            tokio::spawn(async move {
+                // Update LFS object status
+                let _ = lfs_object::Entity::update_many()
+                    .col_expr(lfs_object::Column::Status, sea_orm::sea_query::Expr::value(2))
+                    .col_expr(lfs_object::Column::RawPath, sea_orm::sea_query::Expr::value::<Option<String>>(None))
+                    .filter(lfs_object::Column::Oid.eq(&oid_hex))
+                    .exec(&*db)
+                    .await;
+
+                // Store chunk hashes for reconstruction
+                for (i, chunk_hash) in chunk_hashes_clone.iter().enumerate() {
+                    let model = lfs_chunk::ActiveModel {
+                        id: Set(Default::default()),
+                        lfs_oid: Set(oid_hex.clone()),
+                        chunk_index: Set(i as i32),
+                        chunk_hash: Set(chunk_hash.to_hex()),
+                    };
+                    let _ = lfs_chunk::Entity::insert(model).exec(&*db).await;
+                }
+            });
         }
 
         // Optionally delete raw file after successful chunking
