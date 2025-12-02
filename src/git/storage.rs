@@ -13,7 +13,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use dashmap::DashMap;
 use parking_lot::RwLock;
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use sha1::{Digest, Sha1};
 
 use crate::db::entities::{git_object, git_ref, repository};
