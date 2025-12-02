@@ -1,6 +1,7 @@
 //! Content-Addressable Storage (CAS) module.
 //!
 //! Provides chunking, deduplication, and storage for large files.
+//! Data is stored on disk via a pluggable storage backend (not in memory).
 
 #![allow(dead_code)] // Many methods are part of the public API but not yet used internally
 
@@ -15,6 +16,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
 use crate::error::{Result, ServerError};
+use crate::storage::{namespaces, StorageBackend, StorageConfig};
 
 // ============================================================================
 // Constants (aligned with xet-core)
@@ -28,6 +30,9 @@ pub const MIN_CHUNK_SIZE: usize = TARGET_CDC_CHUNK_SIZE / 4;
 pub const MAX_CHUNK_SIZE: usize = TARGET_CDC_CHUNK_SIZE * 8;
 /// Read buffer size for streaming (64KB)
 pub const STREAM_BUFFER_SIZE: usize = 64 * 1024;
+/// Target Block size (~64MB like HF Xet) - bundles chunks before upload to S3
+/// This reduces S3 requests from millions to thousands for large files
+pub const TARGET_BLOCK_SIZE: usize = 64 * 1024 * 1024;
 
 /// Content hash (256-bit)
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -97,48 +102,144 @@ impl Chunk {
     }
 }
 
-/// Xorb (Xet Object) - a collection of chunks
+/// A chunk entry within a Block (tracks byte offset within the block)
 #[derive(Clone, Debug)]
-pub struct Xorb {
-    pub hash: ContentHash,
-    pub chunks: Vec<ContentHash>,
-    pub total_size: usize,
+pub struct BlockChunkEntry {
+    /// Hash of this chunk
+    pub chunk_hash: ContentHash,
+    /// Size of this chunk in bytes
+    pub chunk_size: u32,
+    /// Byte offset of this chunk within the block data
+    pub byte_offset: u32,
 }
 
-impl Xorb {
-    pub fn new(chunks: Vec<ContentHash>) -> Self {
-        // Hash is computed from the chunk hashes
+/// Block - a bundle of chunks (~64MB)
+///
+/// Blocks are the unit of storage in CAS (like HF Xet). Instead of storing
+/// individual 64KB chunks, we bundle ~1000 chunks into a single ~64MB Block.
+/// This dramatically reduces:
+/// - Number of S3 requests for downloads (~780 vs 780,000 for 50GB file)
+/// - Storage overhead (fewer objects to track)
+///
+/// The CAS server fetches byte ranges from Blocks to reconstruct files.
+#[derive(Clone, Debug)]
+pub struct Block {
+    /// Hash of the block (computed from concatenated chunk data)
+    pub hash: ContentHash,
+    /// Chunk entries with their byte offsets within the block
+    pub chunks: Vec<BlockChunkEntry>,
+    /// Total size of the block data in bytes
+    pub total_size: u32,
+}
+
+impl Block {
+    /// Create a new Block from chunk data
+    /// Returns the Block metadata and the concatenated data to store
+    pub fn from_chunks(chunks: &[(ContentHash, Bytes)]) -> (Self, Bytes) {
         let mut hasher = Sha256::new();
-        for chunk_hash in &chunks {
-            hasher.update(chunk_hash.as_bytes());
+        let mut entries = Vec::with_capacity(chunks.len());
+        let mut data = Vec::new();
+        let mut offset = 0u32;
+
+        for (chunk_hash, chunk_data) in chunks {
+            // Add to block data
+            data.extend_from_slice(chunk_data);
+
+            // Hash includes chunk data for content-addressing
+            hasher.update(chunk_data);
+
+            // Track chunk location
+            entries.push(BlockChunkEntry {
+                chunk_hash: *chunk_hash,
+                chunk_size: chunk_data.len() as u32,
+                byte_offset: offset,
+            });
+
+            offset += chunk_data.len() as u32;
         }
+
         let result = hasher.finalize();
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&result);
 
-        Self {
+        let block = Self {
             hash: ContentHash(hash),
-            chunks,
-            total_size: 0,
+            chunks: entries,
+            total_size: offset,
+        };
+
+        (block, Bytes::from(data))
+    }
+
+    /// Get the byte range for a specific chunk within this block
+    pub fn chunk_byte_range(&self, chunk_index: usize) -> Option<(u32, u32)> {
+        self.chunks.get(chunk_index).map(|entry| {
+            (entry.byte_offset, entry.byte_offset + entry.chunk_size)
+        })
+    }
+
+    /// Get the byte range spanning multiple consecutive chunks
+    pub fn chunk_range_bytes(&self, start_idx: usize, end_idx: usize) -> Option<(u32, u32)> {
+        if start_idx >= self.chunks.len() || end_idx > self.chunks.len() || start_idx >= end_idx {
+            return None;
         }
+        let start_offset = self.chunks[start_idx].byte_offset;
+        let end_entry = &self.chunks[end_idx - 1];
+        let end_offset = end_entry.byte_offset + end_entry.chunk_size;
+        Some((start_offset, end_offset))
     }
 }
 
-/// File reconstruction information
+/// A segment in file reconstruction - points to a byte range within a Block
 #[derive(Clone, Debug)]
-pub struct FileReconstruction {
-    pub file_hash: ContentHash,
-    pub total_size: u64,
-    pub terms: Vec<ReconstructionTerm>,
+pub struct FileSegment {
+    /// Hash of the Block containing this segment's data
+    pub block_hash: ContentHash,
+    /// Starting byte offset within the block
+    pub byte_start: u32,
+    /// Ending byte offset within the block (exclusive)
+    pub byte_end: u32,
+    /// Logical size of this segment (uncompressed)
+    pub segment_size: u32,
 }
 
-/// A term in file reconstruction (points to xorb + chunk range)
+/// File reconstruction information (Shard)
+///
+/// Maps a file hash to a list of segments, where each segment
+/// is a byte range within a Block. This allows efficient reconstruction
+/// by fetching only the needed byte ranges from Blocks.
+///
+/// In HF terminology, this metadata is stored in "shards" which are
+/// synced between the CAS and clients for fast lookups.
 #[derive(Clone, Debug)]
-pub struct ReconstructionTerm {
-    pub xorb_hash: ContentHash,
-    pub chunk_start: u32,
-    pub chunk_end: u32,
-    pub unpacked_length: u64,
+pub struct FileReconstruction {
+    /// Hash of the complete file
+    pub file_hash: ContentHash,
+    /// Total size of the file
+    pub total_size: u64,
+    /// Ordered list of segments that make up the file
+    pub segments: Vec<FileSegment>,
+}
+
+impl FileReconstruction {
+    /// Create reconstruction info from a list of block segments
+    pub fn new(file_hash: ContentHash, segments: Vec<FileSegment>) -> Self {
+        let total_size = segments.iter().map(|s| s.segment_size as u64).sum();
+        Self {
+            file_hash,
+            total_size,
+            segments,
+        }
+    }
+
+    /// Get the total number of Blocks needed to reconstruct this file
+    pub fn block_count(&self) -> usize {
+        let mut blocks: std::collections::HashSet<ContentHash> = std::collections::HashSet::new();
+        for seg in &self.segments {
+            blocks.insert(seg.block_hash);
+        }
+        blocks.len()
+    }
 }
 
 /// Status of an LFS object in the storage system
@@ -164,21 +265,159 @@ pub struct LfsObjectMeta {
     pub chunk_hashes: Option<Vec<ContentHash>>,
 }
 
-/// Content-Addressable Storage backend with streaming and background processing
+// ============================================================================
+// Parallel Streaming Reconstruction
+// ============================================================================
+
+/// Default parallelism for block fetching (concurrent S3 requests)
+pub const DEFAULT_FETCH_PARALLELISM: usize = 32;
+
+/// A stream that reconstructs a file from blocks with parallel fetching.
+///
+/// This enables streaming large files to clients without buffering the entire
+/// file in memory. Segments are fetched in parallel but yielded in order.
+pub struct ReconstructionStream {
+    storage: Arc<dyn StorageBackend>,
+    segments: Vec<FileSegment>,
+    current_idx: usize,
+    parallelism: usize,
+    /// Buffer for out-of-order segments that arrived early
+    pending: std::collections::HashMap<usize, Bytes>,
+    /// Total size for progress tracking
+    pub total_size: u64,
+}
+
+impl ReconstructionStream {
+    pub fn new(
+        storage: Arc<dyn StorageBackend>,
+        reconstruction: FileReconstruction,
+        parallelism: usize,
+    ) -> Self {
+        Self {
+            storage,
+            total_size: reconstruction.total_size,
+            segments: reconstruction.segments,
+            current_idx: 0,
+            parallelism,
+            pending: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Fetch the next batch of segments in parallel and return them in order.
+    ///
+    /// This method fetches up to `parallelism` segments concurrently,
+    /// then returns them one at a time in the correct order.
+    pub async fn next_chunk(&mut self) -> Option<Result<Bytes>> {
+        use futures::stream::{self, StreamExt};
+
+        // Check if we have a pending segment ready
+        if let Some(data) = self.pending.remove(&self.current_idx) {
+            self.current_idx += 1;
+            return Some(Ok(data));
+        }
+
+        // If we've processed all segments, we're done
+        if self.current_idx >= self.segments.len() {
+            return None;
+        }
+
+        // Calculate how many segments to fetch in this batch
+        let remaining = self.segments.len() - self.current_idx;
+        let batch_size = remaining.min(self.parallelism);
+        let batch_end = self.current_idx + batch_size;
+
+        // Fetch batch in parallel
+        let storage = self.storage.clone();
+        let batch: Vec<(usize, FileSegment)> = self.segments[self.current_idx..batch_end]
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (self.current_idx + i, s.clone()))
+            .collect();
+
+        let fetches = stream::iter(batch)
+            .map(|(idx, segment)| {
+                let storage = storage.clone();
+                async move {
+                    let key = segment.block_hash.to_hex();
+                    let range = segment.byte_start as u64..segment.byte_end as u64;
+                    let data = storage
+                        .get_range(namespaces::BLOCKS, &key, range)
+                        .await
+                        .map_err(|e| ServerError::Internal(e.to_string()))?;
+                    Ok::<_, ServerError>((idx, data))
+                }
+            })
+            .buffer_unordered(self.parallelism);
+
+        let results: Vec<std::result::Result<(usize, Bytes), ServerError>> =
+            fetches.collect().await;
+
+        // Process results - store out-of-order ones, return the next in-order one
+        for result in results {
+            match result {
+                Ok((idx, data)) => {
+                    if idx == self.current_idx {
+                        self.current_idx += 1;
+                        // Before returning, check if we have subsequent segments ready
+                        while let Some(next_data) = self.pending.remove(&self.current_idx) {
+                            // We'll return these on subsequent calls
+                            self.pending.insert(self.current_idx, next_data);
+                            break;
+                        }
+                        return Some(Ok(data));
+                    } else {
+                        self.pending.insert(idx, data);
+                    }
+                }
+                Err(e) => return Some(Err(e)),
+            }
+        }
+
+        // Check pending again in case the first segment came out of order
+        if let Some(data) = self.pending.remove(&self.current_idx) {
+            self.current_idx += 1;
+            return Some(Ok(data));
+        }
+
+        // This shouldn't happen unless there was an error
+        None
+    }
+
+    /// Convert to a futures Stream for use with axum/hyper
+    pub fn into_stream(
+        self,
+    ) -> impl futures::Stream<Item = std::result::Result<Bytes, std::io::Error>> {
+        futures::stream::unfold(self, |mut stream| async move {
+            match stream.next_chunk().await {
+                Some(Ok(data)) => Some((Ok(data), stream)),
+                Some(Err(e)) => Some((
+                    Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+                    stream,
+                )),
+                None => None,
+            }
+        })
+    }
+}
+
+/// Content-Addressable Storage backend with streaming and background processing.
+///
+/// Data is stored on disk via the storage backend, not in memory.
+/// Only metadata (hashes, sizes) is kept in memory.
 pub struct CasStore {
-    /// Stored chunks indexed by hash
-    chunks: DashMap<ContentHash, Chunk>,
-    /// Stored xorbs indexed by hash
-    xorbs: DashMap<ContentHash, Xorb>,
-    /// File reconstruction info indexed by file hash
+    /// Storage backend for persisting data
+    storage: Arc<dyn StorageBackend>,
+    /// Set of known chunk hashes (for dedup checking without disk access)
+    chunk_index: DashMap<ContentHash, u64>, // hash -> size
+    /// Block metadata (small, kept in memory for fast lookups)
+    blocks: DashMap<ContentHash, Block>,
+    /// File reconstruction info indexed by file hash (Shard data)
     reconstructions: DashMap<ContentHash, FileReconstruction>,
-    /// Shards for global deduplication
-    shards: DashMap<ContentHash, Bytes>,
     /// LFS object metadata - tracks status and location of each object
     lfs_objects: DashMap<ContentHash, LfsObjectMeta>,
     /// Chunker for content-defined chunking
     chunker: Chunker,
-    /// Storage directory for raw files
+    /// Storage path (for backward compat with raw_object_path)
     storage_path: PathBuf,
     /// Channel to send objects for background processing (unused - AppState holds this)
     process_tx: Option<mpsc::UnboundedSender<ContentHash>>,
@@ -188,21 +427,29 @@ pub struct CasStore {
 
 impl CasStore {
     pub fn new() -> Self {
-        Self::with_storage_path(std::env::temp_dir().join("git-xet-cas"))
+        Self::with_storage_config(StorageConfig::default())
     }
 
     pub fn with_storage_path(storage_path: PathBuf) -> Self {
-        // Create storage directories
-        let raw_path = storage_path.join("raw");
-        let chunks_path = storage_path.join("chunks");
-        std::fs::create_dir_all(&raw_path).ok();
-        std::fs::create_dir_all(&chunks_path).ok();
+        Self::with_storage_config(StorageConfig::local(storage_path))
+    }
+
+    pub fn with_storage_config(config: StorageConfig) -> Self {
+        let storage_path = match &config.storage_type {
+            crate::storage::StorageType::Local { path } => path.clone(),
+            crate::storage::StorageType::S3(_) => std::env::temp_dir().join("git-xet-cache"),
+        };
+
+        // For sync context, only local storage is supported
+        let storage = config.build_local().expect(
+            "S3 storage requires async initialization. Use with_storage_config_async instead."
+        );
 
         Self {
-            chunks: DashMap::new(),
-            xorbs: DashMap::new(),
+            storage,
+            chunk_index: DashMap::new(),
+            blocks: DashMap::new(),
             reconstructions: DashMap::new(),
-            shards: DashMap::new(),
             lfs_objects: DashMap::new(),
             chunker: Chunker::new(),
             storage_path,
@@ -211,9 +458,36 @@ impl CasStore {
         }
     }
 
-    /// Get the path for storing a raw LFS object
+    /// Create with storage config (async version, supports all backends)
+    pub async fn with_storage_config_async(config: StorageConfig) -> Self {
+        let storage_path = match &config.storage_type {
+            crate::storage::StorageType::Local { path } => path.clone(),
+            crate::storage::StorageType::S3(_) => std::env::temp_dir().join("git-xet-cache"),
+        };
+
+        Self {
+            storage: config.build().await,
+            chunk_index: DashMap::new(),
+            blocks: DashMap::new(),
+            reconstructions: DashMap::new(),
+            lfs_objects: DashMap::new(),
+            chunker: Chunker::new(),
+            storage_path,
+            process_tx: None,
+            pending_count: AtomicU64::new(0),
+        }
+    }
+
+    /// Get the storage backend
+    pub fn storage(&self) -> &Arc<dyn StorageBackend> {
+        &self.storage
+    }
+
+    /// Get the path for storing a raw LFS object (for streaming uploads)
     pub fn raw_object_path(&self, oid: &ContentHash) -> PathBuf {
-        self.storage_path.join("raw").join(oid.to_hex())
+        self.storage_path
+            .join(namespaces::LFS_RAW)
+            .join(oid.to_hex())
     }
 
     /// Get the path for storing a chunk
@@ -221,7 +495,7 @@ impl CasStore {
         let hex = hash.to_hex();
         // Use first 2 chars as subdirectory for better filesystem performance
         self.storage_path
-            .join("chunks")
+            .join(namespaces::CAS_CHUNKS)
             .join(&hex[..2])
             .join(&hex[2..])
     }
@@ -285,35 +559,183 @@ impl CasStore {
         // This avoids the need for interior mutability in CasStore
     }
 
-    /// Store a chunk
-    pub fn store_chunk(&self, data: Bytes) -> ContentHash {
-        let chunk = Chunk::new(data);
-        let hash = chunk.hash;
-        self.chunks.insert(hash, chunk);
+    /// Store a chunk to disk (async)
+    pub async fn store_chunk(&self, data: Bytes) -> Result<ContentHash> {
+        let hash = ContentHash::from_data(&data);
+        let size = data.len() as u64;
+
+        // Check if already stored (deduplication)
+        if self.chunk_index.contains_key(&hash) {
+            return Ok(hash);
+        }
+
+        // Store to backend
+        self.storage
+            .put(namespaces::CAS_CHUNKS, &hash.to_hex(), data)
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?;
+
+        // Add to index
+        self.chunk_index.insert(hash, size);
+
+        Ok(hash)
+    }
+
+    /// Store a chunk synchronously (for use in sync contexts)
+    /// Uses tokio::runtime::Handle to block on async
+    pub fn store_chunk_sync(&self, data: Bytes) -> ContentHash {
+        let hash = ContentHash::from_data(&data);
+        let size = data.len() as u64;
+
+        // Check if already stored (deduplication)
+        if self.chunk_index.contains_key(&hash) {
+            return hash;
+        }
+
+        // Store to backend using blocking
+        let storage = self.storage.clone();
+        let key = hash.to_hex();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let _ = handle.block_on(async {
+                storage.put(namespaces::CAS_CHUNKS, &key, data).await
+            });
+        } else {
+            // Fallback: write directly to disk if no runtime
+            let path = self.chunk_path(&hash);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            std::fs::write(&path, &data).ok();
+        }
+
+        // Add to index
+        self.chunk_index.insert(hash, size);
+
         hash
     }
 
-    /// Get a chunk by hash
-    pub fn get_chunk(&self, hash: &ContentHash) -> Option<Chunk> {
-        self.chunks.get(hash).map(|r| r.clone())
+    /// Get a chunk by hash (async)
+    pub async fn get_chunk(&self, hash: &ContentHash) -> Option<Chunk> {
+        let data = self
+            .storage
+            .get(namespaces::CAS_CHUNKS, &hash.to_hex())
+            .await
+            .ok()?;
+        let size = data.len();
+        Some(Chunk {
+            hash: *hash,
+            data,
+            size,
+        })
     }
 
-    /// Check if a chunk exists
+    /// Get a chunk synchronously
+    pub fn get_chunk_sync(&self, hash: &ContentHash) -> Option<Chunk> {
+        // Try direct file read for local storage
+        let path = self.chunk_path(hash);
+        let data = std::fs::read(&path).ok()?;
+        let size = data.len();
+        Some(Chunk {
+            hash: *hash,
+            data: Bytes::from(data),
+            size,
+        })
+    }
+
+    /// Check if a chunk exists (fast, uses in-memory index)
     pub fn has_chunk(&self, hash: &ContentHash) -> bool {
-        self.chunks.contains_key(hash)
+        self.chunk_index.contains_key(hash)
     }
 
-    /// Store a xorb
-    pub fn store_xorb(&self, xorb: Xorb) -> ContentHash {
-        let hash = xorb.hash;
-        self.xorbs.insert(hash, xorb);
+    // =========================================================================
+    // Block Storage (bundled chunks for efficient S3 storage)
+    // =========================================================================
+
+    /// Store a Block (bundled chunks) to disk
+    /// Block data is stored in the BLOCKS namespace, metadata kept in memory
+    pub async fn store_block(&self, chunks: Vec<(ContentHash, Bytes)>) -> Result<ContentHash> {
+        let (block, data) = Block::from_chunks(&chunks);
+        let hash = block.hash;
+
+        // Store block data to disk
+        self.storage
+            .put(namespaces::BLOCKS, &hash.to_hex(), data)
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?;
+
+        // Keep metadata in memory for fast lookups
+        self.blocks.insert(hash, block);
+
+        tracing::debug!("Stored block {} with {} chunks, {} bytes",
+            hash.to_hex(), chunks.len(), self.blocks.get(&hash).map(|x| x.total_size).unwrap_or(0));
+
+        Ok(hash)
+    }
+
+    /// Store a Block synchronously
+    pub fn store_block_sync(&self, chunks: Vec<(ContentHash, Bytes)>) -> ContentHash {
+        let (block, data) = Block::from_chunks(&chunks);
+        let hash = block.hash;
+        let hex = hash.to_hex();
+
+        // Write to disk directly
+        let path = self.storage_path
+            .join(namespaces::BLOCKS)
+            .join(&hex[..2])
+            .join(&hex[2..]);
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&path, &data).ok();
+
+        // Keep metadata in memory
+        self.blocks.insert(hash, block);
+
         hash
     }
 
-    /// Get a xorb by hash
-    pub fn get_xorb(&self, hash: &ContentHash) -> Option<Xorb> {
-        self.xorbs.get(hash).map(|r| r.clone())
+    /// Get block metadata (fast, from memory)
+    pub fn get_block_meta(&self, hash: &ContentHash) -> Option<Block> {
+        self.blocks.get(hash).map(|r| r.clone())
     }
+
+    /// Get full block data from disk
+    pub async fn get_block_data(&self, hash: &ContentHash) -> Option<Bytes> {
+        self.storage
+            .get(namespaces::BLOCKS, &hash.to_hex())
+            .await
+            .ok()
+    }
+
+    /// Get a byte range from a block (for efficient partial fetches from S3)
+    /// This is how the CAS server efficiently reconstructs files
+    pub async fn get_block_range(&self, hash: &ContentHash, start: u32, end: u32) -> Option<Bytes> {
+        let data = self.get_block_data(hash).await?;
+        if end as usize > data.len() {
+            return None;
+        }
+        Some(data.slice(start as usize..end as usize))
+    }
+
+    /// Get block range synchronously
+    pub fn get_block_range_sync(&self, hash: &ContentHash, start: u32, end: u32) -> Option<Bytes> {
+        let hex = hash.to_hex();
+        let path = self.storage_path
+            .join(namespaces::BLOCKS)
+            .join(&hex[..2])
+            .join(&hex[2..]);
+
+        let data = std::fs::read(&path).ok()?;
+        if end as usize > data.len() {
+            return None;
+        }
+        Some(Bytes::from(data[start as usize..end as usize].to_vec()))
+    }
+
+    // =========================================================================
+    // File Reconstruction
+    // =========================================================================
 
     /// Store file reconstruction info
     pub fn store_reconstruction(&self, reconstruction: FileReconstruction) {
@@ -326,50 +748,138 @@ impl CasStore {
         self.reconstructions.get(file_hash).map(|r| r.clone())
     }
 
-    /// Store a shard
-    pub fn store_shard(&self, data: Bytes) -> ContentHash {
-        let hash = ContentHash::from_data(&data);
-        self.shards.insert(hash, data);
-        hash
-    }
-
-    /// Get a shard by hash
-    pub fn get_shard(&self, hash: &ContentHash) -> Option<Bytes> {
-        self.shards.get(hash).map(|r| r.clone())
-    }
-
-    /// Reconstruct a file from its hash
-    pub fn reconstruct_file(&self, file_hash: &ContentHash) -> Result<Bytes> {
+    /// Reconstruct a file from its hash using Block byte ranges
+    /// This is what the CAS server does - fetches byte ranges from Blocks in S3
+    pub async fn reconstruct_file(&self, file_hash: &ContentHash) -> Result<Bytes> {
         let reconstruction = self
             .get_reconstruction(file_hash)
             .ok_or_else(|| ServerError::ObjectNotFound(file_hash.to_hex()))?;
 
         let mut result = Vec::with_capacity(reconstruction.total_size as usize);
 
-        for term in &reconstruction.terms {
-            let xorb = self
-                .get_xorb(&term.xorb_hash)
-                .ok_or_else(|| ServerError::ObjectNotFound(term.xorb_hash.to_hex()))?;
-
-            for i in term.chunk_start..term.chunk_end {
-                let chunk_hash = &xorb.chunks[i as usize];
-                let chunk = self
-                    .get_chunk(chunk_hash)
-                    .ok_or_else(|| ServerError::ObjectNotFound(chunk_hash.to_hex()))?;
-                result.extend_from_slice(&chunk.data);
-            }
+        for segment in &reconstruction.segments {
+            let data = self
+                .get_block_range(&segment.block_hash, segment.byte_start, segment.byte_end)
+                .await
+                .ok_or_else(|| ServerError::ObjectNotFound(segment.block_hash.to_hex()))?;
+            result.extend_from_slice(&data);
         }
 
         Ok(Bytes::from(result))
     }
 
+    /// Reconstruct a file synchronously
+    pub fn reconstruct_file_sync(&self, file_hash: &ContentHash) -> Option<Bytes> {
+        let reconstruction = self.get_reconstruction(file_hash)?;
+
+        let mut result = Vec::with_capacity(reconstruction.total_size as usize);
+
+        for segment in &reconstruction.segments {
+            let data = self.get_block_range_sync(
+                &segment.block_hash,
+                segment.byte_start,
+                segment.byte_end
+            )?;
+            result.extend_from_slice(&data);
+        }
+
+        Some(Bytes::from(result))
+    }
+
+    /// Reconstruct a file using parallel block fetches (HIGH PERFORMANCE)
+    ///
+    /// This is how HF achieves ~5 GB/s download speeds:
+    /// - Fetch multiple block ranges in parallel (controlled by `parallelism`)
+    /// - Stream results as they arrive (ordered for correct output)
+    /// - For S3: uses HTTP Range requests for each segment
+    ///
+    /// For a 50GB file with ~780 blocks:
+    /// - Sequential: 780 requests * ~100ms = 78 seconds
+    /// - Parallel (32 concurrent): 780/32 * ~100ms = ~2.4 seconds
+    pub async fn reconstruct_file_parallel(
+        &self,
+        file_hash: &ContentHash,
+        parallelism: usize,
+    ) -> Result<Bytes> {
+        use futures::stream::{self, StreamExt};
+
+        let reconstruction = self
+            .get_reconstruction(file_hash)
+            .ok_or_else(|| ServerError::ObjectNotFound(file_hash.to_hex()))?;
+
+        // Create indexed segments for ordered reconstruction
+        let indexed_segments: Vec<(usize, FileSegment)> = reconstruction
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i, s.clone()))
+            .collect();
+
+        // Fetch segments in parallel using buffer_unordered
+        let storage = self.storage.clone();
+        let fetches = stream::iter(indexed_segments)
+            .map(|(idx, segment)| {
+                let storage = storage.clone();
+                async move {
+                    let key = segment.block_hash.to_hex();
+                    let range = segment.byte_start as u64..segment.byte_end as u64;
+                    let data = storage
+                        .get_range(namespaces::BLOCKS, &key, range)
+                        .await
+                        .map_err(|e| ServerError::Internal(e.to_string()))?;
+                    Ok::<_, ServerError>((idx, data))
+                }
+            })
+            .buffer_unordered(parallelism);
+
+        // Collect results
+        let results: Vec<(usize, Bytes)> = fetches
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+
+        // Sort by index to maintain correct order
+        let mut sorted_results = results;
+        sorted_results.sort_by_key(|(idx, _)| *idx);
+
+        // Assemble final result
+        let mut output = Vec::with_capacity(reconstruction.total_size as usize);
+        for (_, data) in sorted_results {
+            output.extend_from_slice(&data);
+        }
+
+        Ok(Bytes::from(output))
+    }
+
+    /// Stream a reconstructed file with parallel fetching
+    ///
+    /// Returns a stream of bytes that can be piped directly to an HTTP response.
+    /// This avoids buffering the entire file in memory.
+    ///
+    /// Uses a sliding window approach:
+    /// - Prefetch `parallelism` segments ahead
+    /// - Yield segments in order as they complete
+    /// - Maintain back-pressure to avoid memory bloat
+    pub fn reconstruct_file_stream(
+        &self,
+        file_hash: &ContentHash,
+        parallelism: usize,
+    ) -> Option<ReconstructionStream> {
+        let reconstruction = self.get_reconstruction(file_hash)?;
+        Some(ReconstructionStream::new(
+            self.storage.clone(),
+            reconstruction,
+            parallelism,
+        ))
+    }
+
     /// Get statistics
     pub fn stats(&self) -> CasStats {
         CasStats {
-            chunk_count: self.chunks.len(),
-            xorb_count: self.xorbs.len(),
+            chunk_count: self.chunk_index.len(),
+            block_count: self.blocks.len(),
             reconstruction_count: self.reconstructions.len(),
-            shard_count: self.shards.len(),
             lfs_object_count: self.lfs_objects.len(),
         }
     }
@@ -495,7 +1005,7 @@ impl CasStore {
             ServerError::Internal(format!("Failed to open raw file: {}", e))
         })?;
 
-        let chunk_hashes = self.chunk_and_store_streaming(file)?;
+        let chunk_hashes = self.chunk_and_store_streaming(file, *oid)?;
 
         // Update metadata to chunked
         if let Some(mut meta) = self.lfs_objects.get_mut(oid) {
@@ -519,25 +1029,80 @@ impl CasStore {
         Ok(())
     }
 
-    /// Chunk and store data from a reader using streaming (constant memory usage)
-    fn chunk_and_store_streaming<R: Read>(&self, reader: R) -> Result<Vec<ContentHash>> {
+    /// Chunk and store data from a reader, bundling into Blocks (~64MB each)
+    /// Returns the chunk hashes and creates reconstruction info (shard)
+    fn chunk_and_store_streaming<R: Read>(&self, reader: R, file_hash: ContentHash) -> Result<Vec<ContentHash>> {
         let chunks = self.chunker.chunk_streaming(reader);
-        let mut chunk_hashes = Vec::new();
+        let mut all_chunk_hashes = Vec::new();
 
-        for chunk_data in chunks {
-            let chunk_data = chunk_data.map_err(|e| {
+        // Accumulator for building blocks
+        let mut pending_chunks: Vec<(ContentHash, Bytes)> = Vec::new();
+        let mut pending_size = 0usize;
+
+        // Segments for file reconstruction (shard data)
+        let mut segments: Vec<FileSegment> = Vec::new();
+
+        for chunk_result in chunks {
+            let chunk_data = chunk_result.map_err(|e| {
                 ServerError::Internal(format!("Error reading chunk: {}", e))
             })?;
 
-            let chunk = Chunk::new(Bytes::from(chunk_data));
-            let hash = chunk.hash;
-            chunk_hashes.push(hash);
+            let data = Bytes::from(chunk_data);
+            let chunk_hash = ContentHash::from_data(&data);
+            let chunk_size = data.len();
 
-            // Only store if not already present (deduplication)
-            self.chunks.entry(hash).or_insert(chunk);
+            // Add to pending block
+            pending_chunks.push((chunk_hash, data));
+            pending_size += chunk_size;
+            all_chunk_hashes.push(chunk_hash);
+
+            // If we've accumulated enough for a block, flush it
+            if pending_size >= TARGET_BLOCK_SIZE {
+                let block_hash = self.store_block_sync(pending_chunks.clone());
+
+                // Get the block metadata to build segment info
+                if let Some(block) = self.get_block_meta(&block_hash) {
+                    // Create segment covering all chunks in this block
+                    segments.push(FileSegment {
+                        block_hash,
+                        byte_start: 0,
+                        byte_end: block.total_size,
+                        segment_size: block.total_size,
+                    });
+                }
+
+                // Reset accumulator
+                pending_chunks.clear();
+                pending_size = 0;
+            }
         }
 
-        Ok(chunk_hashes)
+        // Flush remaining chunks as final block
+        if !pending_chunks.is_empty() {
+            let block_hash = self.store_block_sync(pending_chunks);
+
+            if let Some(block) = self.get_block_meta(&block_hash) {
+                segments.push(FileSegment {
+                    block_hash,
+                    byte_start: 0,
+                    byte_end: block.total_size,
+                    segment_size: block.total_size,
+                });
+            }
+        }
+
+        // Store file reconstruction info (shard)
+        let reconstruction = FileReconstruction::new(file_hash, segments);
+        self.store_reconstruction(reconstruction);
+
+        tracing::debug!(
+            "File {} chunked into {} chunks across {} blocks",
+            file_hash.to_hex(),
+            all_chunk_hashes.len(),
+            self.get_reconstruction(&file_hash).map(|r| r.segments.len()).unwrap_or(0)
+        );
+
+        Ok(all_chunk_hashes)
     }
 
     /// Check if an LFS object exists (in any state)
@@ -555,8 +1120,7 @@ impl CasStore {
         self.lfs_objects.get(oid).map(|m| m.size)
     }
 
-    /// Get an LFS object - returns path for streaming or reconstructs from chunks
-    /// For large files, use get_lfs_object_reader instead
+    /// Get an LFS object - returns data from raw file or reconstructs from Xorbs
     pub fn get_lfs_object(&self, oid: &ContentHash) -> Option<Bytes> {
         let meta = self.lfs_objects.get(oid)?;
 
@@ -570,23 +1134,15 @@ impl CasStore {
                 }
             }
             LfsObjectStatus::Chunked => {
-                // Reconstruct from chunks
-                let chunk_hashes = meta.chunk_hashes.as_ref()?;
-                let mut data = Vec::new();
-
-                for hash in chunk_hashes {
-                    let chunk = self.chunks.get(hash)?;
-                    data.extend_from_slice(&chunk.data);
-                }
-
-                Some(Bytes::from(data))
+                // Reconstruct from Xorbs using byte ranges
+                self.reconstruct_file_sync(oid)
             }
         }
     }
 
-    /// Get a streaming reader for an LFS object (for large files)
-    /// Returns either a file reader (for raw) or a chunk iterator (for chunked)
-    pub fn get_lfs_object_path(&self, oid: &ContentHash) -> Option<LfsObjectSource> {
+    /// Get source info for an LFS object
+    /// Returns either raw file path or file hash for Xorb reconstruction
+    pub fn get_lfs_object_source(&self, oid: &ContentHash) -> Option<LfsObjectSource> {
         let meta = self.lfs_objects.get(oid)?;
 
         match meta.status {
@@ -594,7 +1150,7 @@ impl CasStore {
                 meta.raw_path.clone().map(LfsObjectSource::RawFile)
             }
             LfsObjectStatus::Chunked => {
-                meta.chunk_hashes.clone().map(LfsObjectSource::Chunks)
+                Some(LfsObjectSource::Blocks(*oid))
             }
         }
     }
@@ -615,9 +1171,10 @@ impl CasStore {
             }
         }
 
+        // Estimate physical size from chunk index (sizes stored in index)
         let mut total_chunk_size: u64 = 0;
-        for chunk in self.chunks.iter() {
-            total_chunk_size += chunk.data.len() as u64;
+        for entry in self.chunk_index.iter() {
+            total_chunk_size += *entry.value();
         }
 
         LfsStats {
@@ -625,7 +1182,7 @@ impl CasStore {
             raw_count,
             processing_count,
             chunked_count,
-            chunk_count: self.chunks.len(),
+            chunk_count: self.chunk_index.len(),
             total_logical_size: total_size,
             total_physical_size: total_chunk_size,
             dedup_ratio: if total_chunk_size > 0 {
@@ -642,8 +1199,8 @@ impl CasStore {
 pub enum LfsObjectSource {
     /// Object is stored as a raw file
     RawFile(PathBuf),
-    /// Object is stored as chunks (list of chunk hashes)
-    Chunks(Vec<ContentHash>),
+    /// Object is stored in Blocks (use file reconstruction to get data)
+    Blocks(ContentHash),
 }
 
 use tokio::io::AsyncWriteExt;
@@ -671,9 +1228,8 @@ impl Default for CasStore {
 #[derive(Clone, Debug)]
 pub struct CasStats {
     pub chunk_count: usize,
-    pub xorb_count: usize,
+    pub block_count: usize,
     pub reconstruction_count: usize,
-    pub shard_count: usize,
     pub lfs_object_count: usize,
 }
 
@@ -890,13 +1446,18 @@ mod tests {
 
     #[test]
     fn test_chunk_storage() {
-        let store = CasStore::new();
+        let temp_dir = std::env::temp_dir().join("cas-test-chunk-storage");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let store = CasStore::with_storage_path(temp_dir.clone());
 
         let data = Bytes::from("test data");
-        let hash = store.store_chunk(data.clone());
+        let hash = store.store_chunk_sync(data.clone());
 
-        let retrieved = store.get_chunk(&hash).unwrap();
+        let retrieved = store.get_chunk_sync(&hash).unwrap();
         assert_eq!(retrieved.data, data);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -959,8 +1520,8 @@ mod tests {
         assert_eq!(store.get_lfs_object_status(&oid), Some(LfsObjectStatus::Raw));
         assert_eq!(store.get_lfs_object_size(&oid), Some(test_data.len() as u64));
 
-        // Should be able to get path
-        match store.get_lfs_object_path(&oid) {
+        // Should be able to get source
+        match store.get_lfs_object_source(&oid) {
             Some(LfsObjectSource::RawFile(path)) => {
                 assert!(path.exists());
             }

@@ -1,6 +1,7 @@
 //! Git object storage module.
 //!
-//! Provides in-memory storage for Git objects, refs, and repositories.
+//! Provides disk-backed storage for Git objects, refs, and repositories.
+//! Only metadata is kept in memory; objects are stored on disk.
 
 #![allow(dead_code)] // Many methods are part of the public API but not yet used internally
 
@@ -14,6 +15,7 @@ use parking_lot::RwLock;
 use sha1::{Digest, Sha1};
 
 use crate::error::{Result, ServerError};
+use crate::storage::{namespaces, StorageBackend, StorageConfig};
 
 /// A 20-byte object ID (SHA-1 hash) - Git standard format
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -128,21 +130,45 @@ pub struct GitRef {
     pub symbolic_target: Option<String>,
 }
 
-/// In-memory Git repository
+/// Disk-backed Git repository
+/// Objects are stored on disk via storage backend; only refs are in memory.
 pub struct Repository {
     pub name: String,
-    objects: DashMap<ObjectId, GitObject>,
+    storage: Arc<dyn StorageBackend>,
+    /// Index of known objects (id -> object type code, for quick lookups)
+    object_index: DashMap<ObjectId, u8>, // 0=blob, 1=tree, 2=commit, 3=tag
     refs: RwLock<HashMap<String, GitRef>>,
     head: RwLock<String>,
+    storage_path: PathBuf,
 }
 
 impl Repository {
     pub fn new(name: String) -> Self {
+        Self::with_storage_config(name, StorageConfig::default())
+    }
+
+    pub fn with_storage_path(name: String, storage_path: PathBuf) -> Self {
+        Self::with_storage_config(name, StorageConfig::local(storage_path))
+    }
+
+    pub fn with_storage_config(name: String, config: StorageConfig) -> Self {
+        let storage_path = match &config.storage_type {
+            crate::storage::StorageType::Local { path } => path.clone(),
+            crate::storage::StorageType::S3(_) => std::env::temp_dir().join("git-xet-cache"),
+        };
+
+        // For sync context, only local storage is supported
+        let storage = config.build_local().expect(
+            "S3 storage requires async initialization"
+        );
+
         let repo = Self {
             name,
-            objects: DashMap::new(),
+            storage,
+            object_index: DashMap::new(),
             refs: RwLock::new(HashMap::new()),
             head: RwLock::new("refs/heads/main".to_string()),
+            storage_path,
         };
 
         // Create initial empty tree and commit
@@ -154,7 +180,7 @@ impl Repository {
         // Create an empty tree
         let empty_tree = GitObject::new(ObjectType::Tree, Bytes::new());
         let tree_id = empty_tree.compute_id();
-        self.objects.insert(tree_id, empty_tree);
+        self.store_object_sync(tree_id, &empty_tree);
 
         // Create initial commit
         let commit_data = format!(
@@ -163,7 +189,7 @@ impl Repository {
         );
         let commit = GitObject::new(ObjectType::Commit, Bytes::from(commit_data));
         let commit_id = commit.compute_id();
-        self.objects.insert(commit_id, commit);
+        self.store_object_sync(commit_id, &commit);
 
         // Set up refs
         let mut refs = self.refs.write();
@@ -187,21 +213,94 @@ impl Repository {
         );
     }
 
+    /// Get the object storage key
+    fn object_key(&self, id: &ObjectId) -> String {
+        format!("{}/{}", self.name, id.to_hex())
+    }
+
+    /// Store object synchronously (for initialization and sync contexts)
+    fn store_object_sync(&self, id: ObjectId, object: &GitObject) {
+        let type_code = match object.object_type {
+            ObjectType::Blob => 0,
+            ObjectType::Tree => 1,
+            ObjectType::Commit => 2,
+            ObjectType::Tag => 3,
+        };
+
+        // Serialize: first byte is type, rest is data
+        let mut serialized = vec![type_code];
+        serialized.extend_from_slice(&object.data);
+
+        // Write to disk
+        let hex = id.to_hex();
+        let path = self.storage_path
+            .join(namespaces::GIT_OBJECTS)
+            .join(&self.name)
+            .join(&hex[..2])
+            .join(&hex[2..]);
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&path, &serialized).ok();
+
+        // Add to index
+        self.object_index.insert(id, type_code);
+    }
+
     /// Store an object in the repository
     pub fn store_object(&self, object: GitObject) -> ObjectId {
         let id = object.compute_id();
-        self.objects.insert(id, object);
+        self.store_object_sync(id, &object);
         id
     }
 
     /// Get an object by ID
     pub fn get_object(&self, id: &ObjectId) -> Option<GitObject> {
-        self.objects.get(id).map(|r| r.clone())
+        // Read from disk
+        let hex = id.to_hex();
+        let path = self.storage_path
+            .join(namespaces::GIT_OBJECTS)
+            .join(&self.name)
+            .join(&hex[..2])
+            .join(&hex[2..]);
+
+        let data = std::fs::read(&path).ok()?;
+        if data.is_empty() {
+            return None;
+        }
+
+        let type_code = data[0];
+        let object_type = match type_code {
+            0 => ObjectType::Blob,
+            1 => ObjectType::Tree,
+            2 => ObjectType::Commit,
+            3 => ObjectType::Tag,
+            _ => return None,
+        };
+
+        Some(GitObject {
+            object_type,
+            data: Bytes::from(data[1..].to_vec()),
+        })
     }
 
     /// Check if an object exists
     pub fn has_object(&self, id: &ObjectId) -> bool {
-        self.objects.contains_key(id)
+        // Fast check using index first
+        if self.object_index.contains_key(id) {
+            return true;
+        }
+
+        // Fall back to disk check
+        let hex = id.to_hex();
+        let path = self.storage_path
+            .join(namespaces::GIT_OBJECTS)
+            .join(&self.name)
+            .join(&hex[..2])
+            .join(&hex[2..]);
+
+        path.exists()
     }
 
     /// Get a reference by name
@@ -258,33 +357,33 @@ impl Repository {
 
     /// Get all object IDs (for pack generation)
     pub fn all_object_ids(&self) -> Vec<ObjectId> {
-        self.objects.iter().map(|r| *r.key()).collect()
+        self.object_index.iter().map(|r| *r.key()).collect()
     }
 
     /// Count objects
     pub fn object_count(&self) -> usize {
-        self.objects.len()
+        self.object_index.len()
     }
 }
 
 /// Repository storage manager
 pub struct RepositoryStore {
     repos: DashMap<String, Arc<Repository>>,
-    storage_path: Option<PathBuf>,
+    storage_path: PathBuf,
 }
 
 impl RepositoryStore {
     pub fn new() -> Self {
         Self {
             repos: DashMap::new(),
-            storage_path: None,
+            storage_path: std::env::temp_dir().join("git-xet-storage"),
         }
     }
 
     pub fn with_storage_path(path: PathBuf) -> Self {
         Self {
             repos: DashMap::new(),
-            storage_path: Some(path),
+            storage_path: path,
         }
     }
 
@@ -294,7 +393,10 @@ impl RepositoryStore {
             return Err(ServerError::RepoAlreadyExists(name.to_string()));
         }
 
-        let repo = Arc::new(Repository::new(name.to_string()));
+        let repo = Arc::new(Repository::with_storage_path(
+            name.to_string(),
+            self.storage_path.clone(),
+        ));
         self.repos.insert(name.to_string(), repo.clone());
         Ok(repo)
     }
@@ -309,9 +411,12 @@ impl RepositoryStore {
 
     /// Get or create a repository
     pub fn get_or_create_repo(&self, name: &str) -> Arc<Repository> {
+        let storage_path = self.storage_path.clone();
         self.repos
             .entry(name.to_string())
-            .or_insert_with(|| Arc::new(Repository::new(name.to_string())))
+            .or_insert_with(|| {
+                Arc::new(Repository::with_storage_path(name.to_string(), storage_path))
+            })
             .clone()
     }
 

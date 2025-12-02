@@ -2,8 +2,10 @@ mod api;
 mod cas;
 mod error;
 mod git;
+mod storage;
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
@@ -27,8 +29,13 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Create application state
-    let state = Arc::new(AppState::new());
+    // Get storage path from environment or use default
+    let storage_path = std::env::var("GIT_XET_STORAGE_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("git-xet-storage"));
+
+    // Create application state with configured storage path
+    let state = Arc::new(AppState::with_storage_path(storage_path));
 
     // Add default admin user (in production, load from config/env)
     state.auth.add_user(

@@ -34,15 +34,19 @@ impl AppState {
 
     pub fn with_storage_path(storage_path: std::path::PathBuf) -> Self {
         // Create CasStore with Arc for sharing
-        let cas = Arc::new(CasStore::with_storage_path(storage_path));
+        let cas = Arc::new(CasStore::with_storage_path(storage_path.clone()));
+
+        // Create RepositoryStore with same storage path
+        let repos = RepositoryStore::with_storage_path(storage_path.clone());
 
         // Start background worker for chunking/deduplication
         let process_tx = CasStore::start_background_worker(cas.clone());
 
         tracing::info!("Background CAS processing worker started");
+        tracing::info!("Storage path: {:?}", storage_path);
 
         Self {
-            repos: RepositoryStore::new(),
+            repos,
             cas,
             auth: AuthManager::new(),
             process_tx,
@@ -530,9 +534,8 @@ pub async fn cas_stats(
 
     let json = serde_json::json!({
         "chunks": stats.chunk_count,
-        "xorbs": stats.xorb_count,
+        "blocks": stats.block_count,
         "reconstructions": stats.reconstruction_count,
-        "shards": stats.shard_count,
         "lfs": {
             "objects": lfs_stats.object_count,
             "chunks": lfs_stats.chunk_count,
