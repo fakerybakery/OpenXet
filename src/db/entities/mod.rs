@@ -1,5 +1,6 @@
 //! Database entities
 
+pub mod user;
 pub mod repository;
 pub mod git_ref;
 pub mod git_object;
@@ -10,6 +11,8 @@ pub mod cas_block;
 pub mod file_segment;
 
 // Re-export entities for convenient access (may not all be used yet)
+#[allow(unused_imports)]
+pub use user::Entity as User;
 #[allow(unused_imports)]
 pub use repository::Entity as Repository;
 #[allow(unused_imports)]

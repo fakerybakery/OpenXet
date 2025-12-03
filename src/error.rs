@@ -33,6 +33,9 @@ pub enum ServerError {
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
 
+    #[error("Invalid path: {0}")]
+    InvalidPath(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 
@@ -52,6 +55,7 @@ impl IntoResponse for ServerError {
             ServerError::AuthFailed => (StatusCode::FORBIDDEN, self.to_string()),
             ServerError::PermissionDenied => (StatusCode::FORBIDDEN, self.to_string()),
             ServerError::InvalidRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            ServerError::InvalidPath(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ServerError::Internal(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
             }

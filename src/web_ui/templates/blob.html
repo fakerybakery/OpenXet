@@ -31,10 +31,10 @@
 </style>
 
 <div class="breadcrumb">
-    <a href="/ui/repos">Repositories</a> /
-    <a href="/ui/repos/{{ repo_name }}">{{ repo_name }}</a> /
-    <a href="/ui/repos/{{ repo_name }}?tab=files&branch={{ ref_name }}">{{ ref_name }}</a>
-    {% for crumb in breadcrumbs %} / {% if loop.last %}{{ crumb.name }}{% else %}<a href="/ui/repos/{{ repo_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>{% endif %}{% endfor %}
+    <a href="/">Repositories</a> /
+    <a href="/{{ full_name }}">{{ full_name }}</a> /
+    <a href="/{{ full_name }}?tab=files&branch={{ ref_name }}">{{ ref_name }}</a>
+    {% for crumb in breadcrumbs %} / {% if loop.last %}{{ crumb.name }}{% else %}<a href="/{{ full_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>{% endif %}{% endfor %}
 </div>
 
 <div class="card">
@@ -52,10 +52,10 @@
         </div>
         <div class="flex gap-2">
             {% if not is_lfs and not is_binary %}
-            <a href="/ui/repos/{{ repo_name }}/edit/{{ ref_name }}/{{ path }}" class="btn">Edit</a>
+            <a href="/{{ full_name }}/edit/{{ ref_name }}/{{ path }}" class="btn">Edit</a>
             {% endif %}
             {% if is_lfs and lfs_oid %}
-            <a href="/{{ repo_name }}.git/info/lfs/objects/{{ lfs_oid }}" class="btn btn-primary">Download</a>
+            <a href="/{{ full_name }}.git/info/lfs/objects/{{ lfs_oid }}" class="btn btn-primary">Download</a>
             {% endif %}
         </div>
     </div>

@@ -25,16 +25,40 @@ pub async fn init_database(db_path: &Path) -> Result<DatabaseConnection, DbErr> 
 
 /// Create all tables if they don't exist
 async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
+    // Users table
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            display_name TEXT,
+            email TEXT,
+            created_at INTEGER NOT NULL
+        )
+        "#.to_string(),
+    )).await?;
+
     // Repositories table
     db.execute(Statement::from_string(
         db.get_database_backend(),
         r#"
         CREATE TABLE IF NOT EXISTS repositories (
-            name TEXT PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
             head TEXT NOT NULL,
-            created_at INTEGER NOT NULL
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+            UNIQUE(owner_id, name)
         )
         "#.to_string(),
+    )).await?;
+
+    // Create index for owner lookups
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_repos_owner ON repositories(owner_id)"#.to_string(),
     )).await?;
 
     // Git refs table
@@ -43,12 +67,12 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
         r#"
         CREATE TABLE IF NOT EXISTS git_refs (
             id TEXT PRIMARY KEY,
-            repo_name TEXT NOT NULL,
+            repo_id INTEGER NOT NULL,
             ref_name TEXT NOT NULL,
             target_hash TEXT NOT NULL,
             is_symbolic INTEGER NOT NULL DEFAULT 0,
             symbolic_target TEXT,
-            FOREIGN KEY (repo_name) REFERENCES repositories(name) ON DELETE CASCADE
+            FOREIGN KEY (repo_id) REFERENCES repositories(id) ON DELETE CASCADE
         )
         "#.to_string(),
     )).await?;
@@ -56,7 +80,7 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
     // Create index on git_refs for repo lookups
     db.execute(Statement::from_string(
         db.get_database_backend(),
-        r#"CREATE INDEX IF NOT EXISTS idx_git_refs_repo ON git_refs(repo_name)"#.to_string(),
+        r#"CREATE INDEX IF NOT EXISTS idx_git_refs_repo ON git_refs(repo_id)"#.to_string(),
     )).await?;
 
     // Git objects table
@@ -65,10 +89,10 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
         r#"
         CREATE TABLE IF NOT EXISTS git_objects (
             id TEXT PRIMARY KEY,
-            repo_name TEXT NOT NULL,
+            repo_id INTEGER NOT NULL,
             object_hash TEXT NOT NULL,
             object_type INTEGER NOT NULL,
-            FOREIGN KEY (repo_name) REFERENCES repositories(name) ON DELETE CASCADE
+            FOREIGN KEY (repo_id) REFERENCES repositories(id) ON DELETE CASCADE
         )
         "#.to_string(),
     )).await?;
@@ -76,7 +100,7 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
     // Create index on git_objects for repo and hash lookups
     db.execute(Statement::from_string(
         db.get_database_backend(),
-        r#"CREATE INDEX IF NOT EXISTS idx_git_objects_repo ON git_objects(repo_name)"#.to_string(),
+        r#"CREATE INDEX IF NOT EXISTS idx_git_objects_repo ON git_objects(repo_id)"#.to_string(),
     )).await?;
     db.execute(Statement::from_string(
         db.get_database_backend(),

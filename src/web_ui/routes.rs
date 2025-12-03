@@ -14,20 +14,21 @@ use crate::api::AppState;
 use crate::git::{ObjectId, ObjectType, Repository, TreeEntry};
 use super::templates;
 
-/// Create the web UI router with all routes under /ui
+/// Create the web UI router with GitHub-like routes
+/// Routes: /:owner/:repo, /:owner/:repo/tree/:ref, etc.
 pub fn create_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(index))
-        .route("/ui", get(index))
-        .route("/ui/repos", get(repos_list))
-        .route("/ui/repos/:repo", get(repo_detail))
-        .route("/ui/repos/:repo/tree/:ref", get(tree_root))
-        .route("/ui/repos/:repo/tree/:ref/*path", get(tree_path))
-        .route("/ui/repos/:repo/blob/:ref/*path", get(blob_view))
-        .route("/ui/repos/:repo/edit/:ref/*path", get(edit_file).post(commit_file))
-        .route("/ui/repos/:repo/new/:ref", get(new_file).post(commit_new_file))
-        .route("/ui/repos/:repo/new/:ref/*path", get(new_file_in_dir).post(commit_new_file_in_dir))
-        .route("/ui/stats", get(stats))
+        // Stats page
+        .route("/-/stats", get(stats))
+        // Repository routes (owner/repo format)
+        .route("/:owner/:repo", get(repo_detail))
+        .route("/:owner/:repo/tree/:ref", get(tree_root))
+        .route("/:owner/:repo/tree/:ref/*path", get(tree_path))
+        .route("/:owner/:repo/blob/:ref/*path", get(blob_view))
+        .route("/:owner/:repo/edit/:ref/*path", get(edit_file).post(commit_file))
+        .route("/:owner/:repo/new/:ref", get(new_file).post(commit_new_file))
+        .route("/:owner/:repo/new/:ref/*path", get(new_file_in_dir).post(commit_new_file_in_dir))
 }
 
 /// Home page
@@ -45,16 +46,6 @@ async fn index(State(state): State<Arc<AppState>>) -> Response {
     render_template("index.html", &context)
 }
 
-/// List all repositories
-async fn repos_list(State(state): State<Arc<AppState>>) -> Response {
-    let mut context = Context::new();
-
-    let repos: Vec<String> = state.repos.list_repos();
-    context.insert("repos", &repos);
-
-    render_template("repos.html", &context)
-}
-
 /// Query params for repo page
 #[derive(serde::Deserialize, Default)]
 struct RepoQuery {
@@ -65,21 +56,24 @@ struct RepoQuery {
 /// Repository detail page with tabs
 async fn repo_detail(
     State(state): State<Arc<AppState>>,
-    Path(repo): Path<String>,
+    Path((owner, repo)): Path<(String, String)>,
     Query(query): Query<RepoQuery>,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
 
     // Check if repo exists
-    let repo_handle = match state.repos.get_repo(repo_name) {
+    let repo_handle = match state.repos.get_repo(&full_name) {
         Ok(r) => r,
         Err(_) => {
-            return render_error(&format!("Repository '{}' not found", repo_name));
+            return render_error(&format!("Repository '{}' not found", full_name));
         }
     };
 
     let mut context = Context::new();
+    context.insert("owner", &owner);
     context.insert("repo_name", repo_name);
+    context.insert("full_name", &full_name);
 
     // Get branches
     let git_refs = repo_handle.list_refs();
@@ -270,31 +264,33 @@ struct Breadcrumb {
 /// View tree root (no path)
 async fn tree_root(
     State(state): State<Arc<AppState>>,
-    Path((repo, ref_name)): Path<(String, String)>,
+    Path((owner, repo, ref_name)): Path<(String, String, String)>,
 ) -> Response {
-    tree_view_impl(state, &repo, &ref_name, "").await
+    tree_view_impl(state, &owner, &repo, &ref_name, "").await
 }
 
 /// View tree at a specific path
 async fn tree_path(
     State(state): State<Arc<AppState>>,
-    Path((repo, ref_name, path)): Path<(String, String, String)>,
+    Path((owner, repo, ref_name, path)): Path<(String, String, String, String)>,
 ) -> Response {
-    tree_view_impl(state, &repo, &ref_name, &path).await
+    tree_view_impl(state, &owner, &repo, &ref_name, &path).await
 }
 
 /// Implementation for tree viewing
 async fn tree_view_impl(
     state: Arc<AppState>,
+    owner: &str,
     repo: &str,
     ref_name: &str,
     path: &str,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
 
-    let repo_handle = match state.repos.get_repo(repo_name) {
+    let repo_handle = match state.repos.get_repo(&full_name) {
         Ok(r) => r,
-        Err(_) => return render_error(&format!("Repository '{}' not found", repo_name)),
+        Err(_) => return render_error(&format!("Repository '{}' not found", full_name)),
     };
 
     // Resolve ref to commit
@@ -331,7 +327,9 @@ async fn tree_view_impl(
     };
 
     let mut context = Context::new();
+    context.insert("owner", owner);
     context.insert("repo_name", repo_name);
+    context.insert("full_name", &full_name);
     context.insert("ref_name", ref_name);
     context.insert("path", path);
 
@@ -435,13 +433,14 @@ async fn tree_view_impl(
 /// View a file (blob)
 async fn blob_view(
     State(state): State<Arc<AppState>>,
-    Path((repo, ref_name, path)): Path<(String, String, String)>,
+    Path((owner, repo, ref_name, path)): Path<(String, String, String, String)>,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
 
-    let repo_handle = match state.repos.get_repo(repo_name) {
+    let repo_handle = match state.repos.get_repo(&full_name) {
         Ok(r) => r,
-        Err(_) => return render_error(&format!("Repository '{}' not found", repo_name)),
+        Err(_) => return render_error(&format!("Repository '{}' not found", full_name)),
     };
 
     // Resolve ref to commit
@@ -473,7 +472,9 @@ async fn blob_view(
     };
 
     let mut context = Context::new();
+    context.insert("owner", &owner);
     context.insert("repo_name", repo_name);
+    context.insert("full_name", &full_name);
     context.insert("ref_name", &ref_name);
     context.insert("path", &path);
 
@@ -595,13 +596,14 @@ struct EditForm {
 /// Edit a file (GET - show editor)
 async fn edit_file(
     State(state): State<Arc<AppState>>,
-    Path((repo, ref_name, path)): Path<(String, String, String)>,
+    Path((owner, repo, ref_name, path)): Path<(String, String, String, String)>,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
 
-    let repo_handle = match state.repos.get_repo(repo_name) {
+    let repo_handle = match state.repos.get_repo(&full_name) {
         Ok(r) => r,
-        Err(_) => return render_error(&format!("Repository '{}' not found", repo_name)),
+        Err(_) => return render_error(&format!("Repository '{}' not found", full_name)),
     };
 
     // Resolve ref to commit
@@ -643,7 +645,9 @@ async fn edit_file(
     }
 
     let mut context = Context::new();
+    context.insert("owner", &owner);
     context.insert("repo_name", repo_name);
+    context.insert("full_name", &full_name);
     context.insert("ref_name", &ref_name);
     context.insert("path", &path);
 
@@ -673,23 +677,26 @@ async fn edit_file(
 
 /// New file (GET - show editor for new file) - root level
 async fn new_file(
-    Path((repo, ref_name)): Path<(String, String)>,
+    Path((owner, repo, ref_name)): Path<(String, String, String)>,
 ) -> Response {
-    render_new_file_form(&repo, &ref_name, "")
+    render_new_file_form(&owner, &repo, &ref_name, "")
 }
 
 /// New file (GET - show editor for new file) - in directory
 async fn new_file_in_dir(
-    Path((repo, ref_name, dir_path)): Path<(String, String, String)>,
+    Path((owner, repo, ref_name, dir_path)): Path<(String, String, String, String)>,
 ) -> Response {
-    render_new_file_form(&repo, &ref_name, &dir_path)
+    render_new_file_form(&owner, &repo, &ref_name, &dir_path)
 }
 
-fn render_new_file_form(repo: &str, ref_name: &str, dir_path: &str) -> Response {
+fn render_new_file_form(owner: &str, repo: &str, ref_name: &str, dir_path: &str) -> Response {
     let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
 
     let mut context = Context::new();
+    context.insert("owner", owner);
     context.insert("repo_name", repo_name);
+    context.insert("full_name", &full_name);
     context.insert("ref_name", ref_name);
     context.insert("is_new", &true);
     context.insert("content", &"");
@@ -713,14 +720,15 @@ fn render_new_file_form(repo: &str, ref_name: &str, dir_path: &str) -> Response 
 /// Commit file changes (POST)
 async fn commit_file(
     State(state): State<Arc<AppState>>,
-    Path((repo, ref_name, path)): Path<(String, String, String)>,
+    Path((owner, repo, ref_name, path)): Path<(String, String, String, String)>,
     Form(form): Form<EditForm>,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
 
-    let repo_handle = match state.repos.get_repo(repo_name) {
+    let repo_handle = match state.repos.get_repo(&full_name) {
         Ok(r) => r,
-        Err(_) => return render_error(&format!("Repository '{}' not found", repo_name)),
+        Err(_) => return render_error(&format!("Repository '{}' not found", full_name)),
     };
 
     // Resolve ref to commit (this will be the parent)
@@ -803,41 +811,43 @@ async fn commit_file(
     let _ = repo_handle.update_ref(&format!("refs/heads/{}", ref_name), new_commit_id);
 
     // Redirect to the file view
-    Redirect::to(&format!("/ui/repos/{}/blob/{}/{}", repo_name, ref_name, new_path)).into_response()
+    Redirect::to(&format!("/{}/{}/blob/{}/{}", owner, repo_name, ref_name, new_path)).into_response()
 }
 
 /// Commit new file (POST) - root level
 async fn commit_new_file(
     State(state): State<Arc<AppState>>,
-    Path((repo, ref_name)): Path<(String, String)>,
+    Path((owner, repo, ref_name)): Path<(String, String, String)>,
     Form(form): Form<EditForm>,
 ) -> Response {
-    commit_file_impl(state, &repo, &ref_name, "", form).await
+    commit_file_impl(state, &owner, &repo, &ref_name, "", form).await
 }
 
 /// Commit new file (POST) - in directory
 async fn commit_new_file_in_dir(
     State(state): State<Arc<AppState>>,
-    Path((repo, ref_name, _dir)): Path<(String, String, String)>,
+    Path((owner, repo, ref_name, _dir)): Path<(String, String, String, String)>,
     Form(form): Form<EditForm>,
 ) -> Response {
     // The dir in path is just for context; actual path comes from form.filename
-    commit_file_impl(state, &repo, &ref_name, "", form).await
+    commit_file_impl(state, &owner, &repo, &ref_name, "", form).await
 }
 
 /// Shared implementation for committing files (edit, rename, new)
 async fn commit_file_impl(
     state: Arc<AppState>,
+    owner: &str,
     repo: &str,
     ref_name: &str,
     original_path: &str,
     form: EditForm,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
 
-    let repo_handle = match state.repos.get_repo(repo_name) {
+    let repo_handle = match state.repos.get_repo(&full_name) {
         Ok(r) => r,
-        Err(_) => return render_error(&format!("Repository '{}' not found", repo_name)),
+        Err(_) => return render_error(&format!("Repository '{}' not found", full_name)),
     };
 
     // Resolve ref to commit (this will be the parent)
@@ -920,7 +930,7 @@ async fn commit_file_impl(
     let _ = repo_handle.update_ref(&format!("refs/heads/{}", ref_name), new_commit_id);
 
     // Redirect to the file view
-    Redirect::to(&format!("/ui/repos/{}/blob/{}/{}", repo_name, ref_name, new_path)).into_response()
+    Redirect::to(&format!("/{}/{}/blob/{}/{}", owner, repo_name, ref_name, new_path)).into_response()
 }
 
 /// Build an updated tree with a file changed at the given path

@@ -6,8 +6,8 @@ use sea_orm::entity::prelude::*;
 #[sea_orm(table_name = "git_refs")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
-    pub id: String, // repo_name + "/" + ref_name
-    pub repo_name: String,
+    pub id: String, // repo_id + "/" + ref_name
+    pub repo_id: i32,
     pub ref_name: String,
     pub target_hash: String, // 40-char hex SHA1
     pub is_symbolic: bool,
@@ -18,8 +18,8 @@ pub struct Model {
 pub enum Relation {
     #[sea_orm(
         belongs_to = "super::repository::Entity",
-        from = "Column::RepoName",
-        to = "super::repository::Column::Name"
+        from = "Column::RepoId",
+        to = "super::repository::Column::Id"
     )]
     Repository,
 }

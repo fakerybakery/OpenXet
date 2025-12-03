@@ -65,8 +65,8 @@ async fn main() {
 
     // Create a sample repository if none exist
     if state.repos.list_repos().is_empty() {
-        let _ = state.repos.create_repo("sample");
-        tracing::info!("Sample repository 'sample' created");
+        let _ = state.repos.create_repo("demo/sample");
+        tracing::info!("Sample repository 'demo/sample' created");
     } else {
         tracing::info!("Loaded {} repositories from database", state.repos.list_repos().len());
     }
@@ -97,8 +97,8 @@ async fn main() {
     tracing::info!("Default credentials: admin/admin (full access), demo/demo (read-only)");
     tracing::info!("");
     tracing::info!("Usage:");
-    tracing::info!("  Clone: git clone http://admin:admin@localhost:8080/sample.git");
-    tracing::info!("  Push:  git push http://admin:admin@localhost:8080/sample.git main");
+    tracing::info!("  Clone: git clone http://admin:admin@localhost:8080/demo/sample.git");
+    tracing::info!("  Push:  git push http://admin:admin@localhost:8080/demo/sample.git main");
     tracing::info!("");
     tracing::info!("Web UI: http://{}/", addr);
 

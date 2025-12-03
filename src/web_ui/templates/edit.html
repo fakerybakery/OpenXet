@@ -23,15 +23,15 @@
 </style>
 
 <div class="breadcrumb">
-    <a href="/ui/repos">Repositories</a> /
-    <a href="/ui/repos/{{ repo_name }}">{{ repo_name }}</a> /
-    <a href="/ui/repos/{{ repo_name }}?tab=files&branch={{ ref_name }}">{{ ref_name }}</a>
-    {% if not is_new %}{% for crumb in breadcrumbs %} / {% if loop.last %}{{ crumb.name }}{% else %}<a href="/ui/repos/{{ repo_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>{% endif %}{% endfor %}{% endif %}
+    <a href="/">Repositories</a> /
+    <a href="/{{ full_name }}">{{ full_name }}</a> /
+    <a href="/{{ full_name }}?tab=files&branch={{ ref_name }}">{{ ref_name }}</a>
+    {% if not is_new %}{% for crumb in breadcrumbs %} / {% if loop.last %}{{ crumb.name }}{% else %}<a href="/{{ full_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>{% endif %}{% endfor %}{% endif %}
 </div>
 
 <h2 style="margin-bottom: 12px;">{% if is_new %}New file{% else %}Editing {{ file_name }}{% endif %}</h2>
 
-<form method="POST" action="/ui/repos/{{ repo_name }}/{% if is_new %}new{% else %}edit{% endif %}/{{ ref_name }}{% if path %}/{{ path }}{% endif %}" id="edit-form">
+<form method="POST" action="/{{ full_name }}/{% if is_new %}new{% else %}edit{% endif %}/{{ ref_name }}{% if path %}/{{ path }}{% endif %}" id="edit-form">
     <div class="card">
         <div class="file-header">
             <input type="text" name="filename" class="edit-input" style="flex: 1; max-width: 400px;" value="{{ path }}" placeholder="path/to/file.txt" />
@@ -40,9 +40,9 @@
         <div style="padding: 8px 12px; border-top: 1px solid #333; display: flex; gap: 8px; align-items: center;">
             <input type="text" name="message" class="edit-input" placeholder="Commit message (optional)" style="flex: 1;" />
             {% if is_new %}
-            <a href="/ui/repos/{{ repo_name }}?tab=files&branch={{ ref_name }}" class="btn">Cancel</a>
+            <a href="/{{ full_name }}?tab=files&branch={{ ref_name }}" class="btn">Cancel</a>
             {% else %}
-            <a href="/ui/repos/{{ repo_name }}/blob/{{ ref_name }}/{{ path }}" class="btn">Cancel</a>
+            <a href="/{{ full_name }}/blob/{{ ref_name }}/{{ path }}" class="btn">Cancel</a>
             {% endif %}
             <button type="submit" class="btn btn-primary">Commit</button>
         </div>

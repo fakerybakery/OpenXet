@@ -16,7 +16,7 @@ use parking_lot::RwLock;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use sha1::{Digest, Sha1};
 
-use crate::db::entities::{git_object, git_ref, repository};
+use crate::db::entities::{git_object, git_ref, repository, user};
 use crate::error::{Result, ServerError};
 use crate::storage::{namespaces, StorageBackend, StorageConfig};
 
@@ -137,7 +137,8 @@ pub struct GitRef {
 /// Objects are stored on disk via storage backend.
 /// Refs and object index are cached in memory and persisted to SQLite.
 pub struct Repository {
-    pub name: String,
+    pub name: String,  // "owner/repo" format
+    pub repo_id: Option<i32>,  // Database ID
     storage: Arc<dyn StorageBackend>,
     /// Index of known objects (id -> object type code, for quick lookups)
     object_index: DashMap<ObjectId, u8>, // 0=blob, 1=tree, 2=commit, 3=tag
@@ -150,18 +151,18 @@ pub struct Repository {
 
 impl Repository {
     pub fn new(name: String) -> Self {
-        Self::with_storage_config(name, StorageConfig::default(), None)
+        Self::with_storage_config(name, None, StorageConfig::default(), None)
     }
 
     pub fn with_storage_path(name: String, storage_path: PathBuf) -> Self {
-        Self::with_storage_config(name, StorageConfig::local(storage_path), None)
+        Self::with_storage_config(name, None, StorageConfig::local(storage_path), None)
     }
 
-    pub fn with_db(name: String, storage_path: PathBuf, db: Arc<DatabaseConnection>) -> Self {
-        Self::with_storage_config(name, StorageConfig::local(storage_path), Some(db))
+    pub fn with_db(name: String, repo_id: Option<i32>, storage_path: PathBuf, db: Arc<DatabaseConnection>) -> Self {
+        Self::with_storage_config(name, repo_id, StorageConfig::local(storage_path), Some(db))
     }
 
-    pub fn with_storage_config(name: String, config: StorageConfig, db: Option<Arc<DatabaseConnection>>) -> Self {
+    pub fn with_storage_config(name: String, repo_id: Option<i32>, config: StorageConfig, db: Option<Arc<DatabaseConnection>>) -> Self {
         let storage_path = match &config.storage_type {
             crate::storage::StorageType::Local { path } => path.clone(),
             crate::storage::StorageType::S3(_) => std::env::temp_dir().join("git-xet-cache"),
@@ -174,6 +175,7 @@ impl Repository {
 
         let repo = Self {
             name,
+            repo_id,
             storage,
             object_index: DashMap::new(),
             refs: RwLock::new(HashMap::new()),
@@ -190,6 +192,11 @@ impl Repository {
     /// Set database connection (used when loading from existing repo)
     pub fn set_db(&mut self, db: Arc<DatabaseConnection>) {
         self.db = Some(db);
+    }
+
+    /// Set repo_id (used when loading from existing repo)
+    pub fn set_repo_id(&mut self, repo_id: i32) {
+        self.repo_id = Some(repo_id);
     }
 
     fn initialize_empty(&self) {
@@ -264,15 +271,14 @@ impl Repository {
         self.object_index.insert(id, type_code);
 
         // Persist to database (fire-and-forget in sync context)
-        if let Some(db) = &self.db {
+        if let (Some(db), Some(repo_id)) = (&self.db, self.repo_id) {
             let db = db.clone();
-            let repo_name = self.name.clone();
             let obj_hash = id.to_hex();
-            let obj_id = format!("{}/{}", repo_name, obj_hash);
+            let obj_id = format!("{}/{}", repo_id, obj_hash);
             tokio::spawn(async move {
                 let model = git_object::ActiveModel {
                     id: Set(obj_id),
-                    repo_name: Set(repo_name),
+                    repo_id: Set(repo_id),
                     object_hash: Set(obj_hash),
                     object_type: Set(type_code as i32),
                 };
@@ -363,16 +369,15 @@ impl Repository {
         );
 
         // Persist to database
-        if let Some(db) = &self.db {
+        if let (Some(db), Some(repo_id)) = (&self.db, self.repo_id) {
             let db = db.clone();
-            let repo_name = self.name.clone();
             let ref_name = name.to_string();
-            let ref_id = format!("{}/{}", repo_name, ref_name);
+            let ref_id = format!("{}/{}", repo_id, ref_name);
             let target_hash = target.to_hex();
             tokio::spawn(async move {
                 let model = git_ref::ActiveModel {
                     id: Set(ref_id.clone()),
-                    repo_name: Set(repo_name),
+                    repo_id: Set(repo_id),
                     ref_name: Set(ref_name),
                     target_hash: Set(target_hash),
                     is_symbolic: Set(false),
@@ -398,11 +403,9 @@ impl Repository {
         refs.remove(name);
 
         // Persist to database
-        if let Some(db) = &self.db {
+        if let (Some(db), Some(repo_id)) = (&self.db, self.repo_id) {
             let db = db.clone();
-            let repo_name = self.name.clone();
-            let ref_name = name.to_string();
-            let ref_id = format!("{}/{}", repo_name, ref_name);
+            let ref_id = format!("{}/{}", repo_id, name);
             tokio::spawn(async move {
                 let _ = git_ref::Entity::delete_by_id(ref_id).exec(&*db).await;
             });
@@ -611,8 +614,9 @@ pub struct TreeEntry {
 }
 
 /// Repository storage manager with SQLite persistence
+/// Repos are stored as "owner/repo" format (e.g., "alice/myproject")
 pub struct RepositoryStore {
-    repos: DashMap<String, Arc<Repository>>,
+    repos: DashMap<String, Arc<Repository>>,  // key: "owner/repo"
     storage_path: PathBuf,
     db: Option<Arc<DatabaseConnection>>,
 }
@@ -649,23 +653,38 @@ impl RepositoryStore {
             None => return Ok(()), // No database configured
         };
 
+        // Load all users first (for mapping owner_id -> username)
+        let users: HashMap<i32, String> = user::Entity::find()
+            .all(&**db)
+            .await
+            .map_err(|e| ServerError::Internal(format!("Failed to load users: {}", e)))?
+            .into_iter()
+            .map(|u| (u.id, u.username))
+            .collect();
+
         // Load all repositories
         let repos = repository::Entity::find().all(&**db).await
             .map_err(|e| ServerError::Internal(format!("Failed to load repos: {}", e)))?;
 
         for repo_model in repos {
-            let name = repo_model.name.clone();
+            let owner_name = match users.get(&repo_model.owner_id) {
+                Some(name) => name.clone(),
+                None => continue, // Skip repos with missing owners
+            };
+            let full_name = format!("{}/{}", owner_name, repo_model.name);
+            let repo_id = repo_model.id;
 
             // Create repository with database connection
             let mut repo = Repository::with_storage_path(
-                name.clone(),
+                full_name.clone(),
                 self.storage_path.clone(),
             );
             repo.set_db(db.clone());
+            repo.set_repo_id(repo_id);
 
             // Load refs for this repository
             let refs = git_ref::Entity::find()
-                .filter(git_ref::Column::RepoName.eq(&name))
+                .filter(git_ref::Column::RepoId.eq(repo_id))
                 .all(&**db)
                 .await
                 .map_err(|e| ServerError::Internal(format!("Failed to load refs: {}", e)))?;
@@ -693,7 +712,7 @@ impl RepositoryStore {
 
             // Load object index for this repository
             let objects = git_object::Entity::find()
-                .filter(git_object::Column::RepoName.eq(&name))
+                .filter(git_object::Column::RepoId.eq(repo_id))
                 .all(&**db)
                 .await
                 .map_err(|e| ServerError::Internal(format!("Failed to load objects: {}", e)))?;
@@ -704,22 +723,108 @@ impl RepositoryStore {
                 }
             }
 
-            self.repos.insert(name, Arc::new(repo));
+            self.repos.insert(full_name, Arc::new(repo));
         }
 
         tracing::info!("Loaded {} repositories from database", self.repos.len());
         Ok(())
     }
 
-    /// Create a new repository
+    /// Get or create a user by username
+    pub async fn get_or_create_user(&self, username: &str) -> Result<i32> {
+        let db = self.db.as_ref()
+            .ok_or_else(|| ServerError::Internal("No database configured".to_string()))?;
+
+        // Try to find existing user
+        if let Some(existing) = user::Entity::find()
+            .filter(user::Column::Username.eq(username))
+            .one(&**db)
+            .await
+            .map_err(|e| ServerError::Internal(format!("Failed to query user: {}", e)))?
+        {
+            return Ok(existing.id);
+        }
+
+        // Create new user
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let result = user::Entity::insert(user::ActiveModel {
+            id: sea_orm::ActiveValue::NotSet,
+            username: Set(username.to_string()),
+            display_name: Set(None),
+            email: Set(None),
+            created_at: Set(now),
+        })
+        .exec(&**db)
+        .await
+        .map_err(|e| ServerError::Internal(format!("Failed to create user: {}", e)))?;
+
+        Ok(result.last_insert_id)
+    }
+
+    /// Create a new repository with owner
+    pub async fn create_repo_async(&self, owner: &str, repo_name: &str) -> Result<Arc<Repository>> {
+        let full_name = format!("{}/{}", owner, repo_name);
+
+        if self.repos.contains_key(&full_name) {
+            return Err(ServerError::RepoAlreadyExists(full_name));
+        }
+
+        let db = self.db.as_ref()
+            .ok_or_else(|| ServerError::Internal("No database configured".to_string()))?;
+
+        // Get or create the user
+        let owner_id = self.get_or_create_user(owner).await?;
+
+        // Create the repository in database
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let result = repository::Entity::insert(repository::ActiveModel {
+            id: sea_orm::ActiveValue::NotSet,
+            owner_id: Set(owner_id),
+            name: Set(repo_name.to_string()),
+            head: Set("refs/heads/main".to_string()),
+            created_at: Set(now),
+        })
+        .exec(&**db)
+        .await
+        .map_err(|e| ServerError::Internal(format!("Failed to create repo: {}", e)))?;
+
+        let repo_id = result.last_insert_id;
+
+        // Create in-memory repository
+        let repo = Arc::new(Repository::with_db(
+            full_name.clone(),
+            Some(repo_id),
+            self.storage_path.clone(),
+            db.clone(),
+        ));
+
+        self.repos.insert(full_name, repo.clone());
+        Ok(repo)
+    }
+
+    /// Create a new repository (sync version - spawns async task for DB)
     pub fn create_repo(&self, name: &str) -> Result<Arc<Repository>> {
+        // Parse owner/repo format
+        let (owner, repo_name) = parse_repo_path(name)?;
+
         if self.repos.contains_key(name) {
             return Err(ServerError::RepoAlreadyExists(name.to_string()));
         }
 
+        // For sync context, create without repo_id initially
+        // The async task will update it
         let repo = if let Some(db) = &self.db {
             Arc::new(Repository::with_db(
                 name.to_string(),
+                None,  // repo_id will be set by async task
                 self.storage_path.clone(),
                 db.clone(),
             ))
@@ -732,34 +837,63 @@ impl RepositoryStore {
 
         self.repos.insert(name.to_string(), repo.clone());
 
-        // Persist to database
+        // Persist to database asynchronously
         if let Some(db) = &self.db {
             let db = db.clone();
-            let name = name.to_string();
+            let owner = owner.to_string();
+            let repo_name = repo_name.to_string();
             tokio::spawn(async move {
-                let model = repository::ActiveModel {
-                    name: Set(name),
-                    head: Set("refs/heads/main".to_string()),
-                    created_at: Set(std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs() as i64),
+                // Get or create user
+                let owner_id = match user::Entity::find()
+                    .filter(user::Column::Username.eq(&owner))
+                    .one(&*db)
+                    .await
+                {
+                    Ok(Some(u)) => u.id,
+                    Ok(None) => {
+                        // Create user
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() as i64;
+                        match user::Entity::insert(user::ActiveModel {
+                            id: sea_orm::ActiveValue::NotSet,
+                            username: Set(owner.clone()),
+                            display_name: Set(None),
+                            email: Set(None),
+                            created_at: Set(now),
+                        })
+                        .exec(&*db)
+                        .await
+                        {
+                            Ok(r) => r.last_insert_id,
+                            Err(_) => return,
+                        }
+                    }
+                    Err(_) => return,
                 };
-                let _ = repository::Entity::insert(model)
-                    .on_conflict(
-                        sea_orm::sea_query::OnConflict::column(repository::Column::Name)
-                            .do_nothing()
-                            .to_owned()
-                    )
-                    .exec(&*db)
-                    .await;
+
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+
+                let _ = repository::Entity::insert(repository::ActiveModel {
+                    id: sea_orm::ActiveValue::NotSet,
+                    owner_id: Set(owner_id),
+                    name: Set(repo_name),
+                    head: Set("refs/heads/main".to_string()),
+                    created_at: Set(now),
+                })
+                .exec(&*db)
+                .await;
             });
         }
 
         Ok(repo)
     }
 
-    /// Get an existing repository
+    /// Get an existing repository by "owner/repo" path
     pub fn get_repo(&self, name: &str) -> Result<Arc<Repository>> {
         self.repos
             .get(name)
@@ -793,26 +927,48 @@ impl RepositoryStore {
 
     /// Delete a repository
     pub fn delete_repo(&self, name: &str) -> Result<()> {
-        self.repos
+        let removed = self.repos
             .remove(name)
             .ok_or_else(|| ServerError::RepoNotFound(name.to_string()))?;
 
         // Delete from database
-        if let Some(db) = &self.db {
+        if let (Some(db), Some(repo_id)) = (&self.db, removed.1.repo_id) {
             let db = db.clone();
-            let name = name.to_string();
             tokio::spawn(async move {
-                let _ = repository::Entity::delete_by_id(name).exec(&*db).await;
+                let _ = repository::Entity::delete_by_id(repo_id).exec(&*db).await;
             });
         }
 
         Ok(())
     }
 
-    /// List all repositories
+    /// List all repositories (returns "owner/repo" format)
     pub fn list_repos(&self) -> Vec<String> {
         self.repos.iter().map(|r| r.key().clone()).collect()
     }
+
+    /// List repositories for a specific user
+    pub fn list_user_repos(&self, owner: &str) -> Vec<String> {
+        let prefix = format!("{}/", owner);
+        self.repos
+            .iter()
+            .filter(|r| r.key().starts_with(&prefix))
+            .map(|r| r.key().clone())
+            .collect()
+    }
+}
+
+/// Parse "owner/repo" format, returns (owner, repo_name)
+pub fn parse_repo_path(path: &str) -> Result<(&str, &str)> {
+    let path = path.trim_end_matches(".git");
+    let parts: Vec<&str> = path.splitn(2, '/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return Err(ServerError::InvalidPath(format!(
+            "Invalid repository path: {}. Expected format: owner/repo",
+            path
+        )));
+    }
+    Ok((parts[0], parts[1]))
 }
 
 impl Default for RepositoryStore {
