@@ -7,15 +7,16 @@
 
 <div class="flex items-center justify-between mb-2">
     <h2 style="margin: 0;">{{ repo_name }}</h2>
-    {% if branches %}
-    <form method="GET" style="display: flex; gap: 8px; align-items: center;">
+    <div class="flex items-center gap-2">
+        {% if branches %}
+        <a href="/ui/repos/{{ repo_name }}/new/{{ current_branch }}" class="btn">New File</a>
         <select name="branch" class="branch-select" onchange="window.location.href='/ui/repos/{{ repo_name }}?tab={{ active_tab }}&branch=' + this.value">
             {% for branch in branches %}
             <option value="{{ branch.name }}" {% if branch.name == current_branch %}selected{% endif %}>{{ branch.name }}</option>
             {% endfor %}
         </select>
-    </form>
-    {% endif %}
+        {% endif %}
+    </div>
 </div>
 
 <div class="tabs">

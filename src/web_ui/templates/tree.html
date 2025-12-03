@@ -10,11 +10,14 @@
 
 <div class="flex items-center justify-between mb-2">
     <h2 style="margin: 0;">{{ current_name }}</h2>
-    <select class="branch-select" onchange="window.location.href='/ui/repos/{{ repo_name }}/tree/' + this.value + '{% if path %}/{{ path }}{% endif %}'">
-        {% for branch in branches %}
-        <option value="{{ branch.name }}" {% if branch.name == ref_name %}selected{% endif %}>{{ branch.name }}</option>
-        {% endfor %}
-    </select>
+    <div class="flex items-center gap-2">
+        <a href="/ui/repos/{{ repo_name }}/new/{{ ref_name }}{% if path %}/{{ path }}{% endif %}" class="btn">New File</a>
+        <select class="branch-select" onchange="window.location.href='/ui/repos/{{ repo_name }}/tree/' + this.value + '{% if path %}/{{ path }}{% endif %}'">
+            {% for branch in branches %}
+            <option value="{{ branch.name }}" {% if branch.name == ref_name %}selected{% endif %}>{{ branch.name }}</option>
+            {% endfor %}
+        </select>
+    </div>
 </div>
 
 <div class="card">

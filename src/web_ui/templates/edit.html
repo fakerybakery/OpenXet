@@ -1,22 +1,18 @@
 {% extends "base.html" %}
-{% block title %}Edit {{ file_name }} - OpenXet{% endblock %}
+{% block title %}{% if is_new %}New File{% else %}Edit {{ file_name }}{% endif %} - OpenXet{% endblock %}
 {% block content %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
 <style>
-    .edit-area {
-        width: 100%;
+    .CodeMirror {
+        height: auto;
         min-height: 400px;
-        padding: 8px;
-        background: #1a1a1a;
-        border: none;
-        color: #ccc;
-        font-family: Consolas, Monaco, monospace;
+        font-family: Consolas, Monaco, 'Courier New', monospace;
         font-size: 12px;
-        line-height: 1.4;
-        resize: vertical;
+        border: none;
     }
-    .edit-area:focus { outline: none; }
-    .commit-input {
-        width: 100%;
+    .CodeMirror-scroll { min-height: 400px; }
+    .edit-input {
         padding: 6px 8px;
         background: #1a1a1a;
         border: 1px solid #333;
@@ -30,22 +26,77 @@
     <a href="/ui/repos">Repositories</a> /
     <a href="/ui/repos/{{ repo_name }}">{{ repo_name }}</a> /
     <a href="/ui/repos/{{ repo_name }}?tab=files&branch={{ ref_name }}">{{ ref_name }}</a>
-    {% for crumb in breadcrumbs %} / {% if loop.last %}{{ crumb.name }}{% else %}<a href="/ui/repos/{{ repo_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>{% endif %}{% endfor %}
+    {% if not is_new %}{% for crumb in breadcrumbs %} / {% if loop.last %}{{ crumb.name }}{% else %}<a href="/ui/repos/{{ repo_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>{% endif %}{% endfor %}{% endif %}
 </div>
 
-<h2 style="margin-bottom: 12px;">Editing {{ file_name }}</h2>
+<h2 style="margin-bottom: 12px;">{% if is_new %}New file{% else %}Editing {{ file_name }}{% endif %}</h2>
 
-<form method="POST" action="/ui/repos/{{ repo_name }}/edit/{{ ref_name }}/{{ path }}">
+<form method="POST" action="/ui/repos/{{ repo_name }}/edit/{{ ref_name }}/{{ path }}" id="edit-form">
     <div class="card">
         <div class="file-header">
-            <span class="text-muted">{{ path }}</span>
+            <input type="text" name="filename" class="edit-input" style="flex: 1; max-width: 400px;" value="{{ path }}" placeholder="path/to/file.txt" />
         </div>
-        <textarea name="content" class="edit-area" spellcheck="false">{{ content }}</textarea>
+        <textarea name="content" id="editor">{{ content }}</textarea>
         <div style="padding: 8px 12px; border-top: 1px solid #333; display: flex; gap: 8px; align-items: center;">
-            <input type="text" name="message" class="commit-input" placeholder="Commit message (optional)" style="flex: 1;" />
+            <input type="text" name="message" class="edit-input" placeholder="Commit message (optional)" style="flex: 1;" />
+            {% if is_new %}
+            <a href="/ui/repos/{{ repo_name }}?tab=files&branch={{ ref_name }}" class="btn">Cancel</a>
+            {% else %}
             <a href="/ui/repos/{{ repo_name }}/blob/{{ ref_name }}/{{ path }}" class="btn">Cancel</a>
+            {% endif %}
             <button type="submit" class="btn btn-primary">Commit</button>
         </div>
     </div>
 </form>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/rust/rust.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/css/css.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/htmlmixed/htmlmixed.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/yaml/yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/toml/toml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/go/go.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/sql/sql.min.js"></script>
+<script>
+(function() {
+    var filenameInput = document.querySelector('input[name="filename"]');
+    var modeMap = {
+        'js': 'javascript', 'jsx': 'javascript', 'ts': 'javascript', 'tsx': 'javascript', 'json': 'javascript',
+        'py': 'python', 'rs': 'rust', 'md': 'markdown',
+        'html': 'htmlmixed', 'htm': 'htmlmixed',
+        'css': 'css', 'scss': 'css', 'less': 'css',
+        'xml': 'xml', 'svg': 'xml',
+        'yml': 'yaml', 'yaml': 'yaml', 'toml': 'toml',
+        'sh': 'shell', 'bash': 'shell', 'zsh': 'shell', 'go': 'go',
+        'c': 'clike', 'h': 'clike', 'cpp': 'clike', 'hpp': 'clike', 'java': 'clike', 'cs': 'clike',
+        'sql': 'sql'
+    };
+
+    function getMode(filename) {
+        var ext = filename.split('.').pop().toLowerCase();
+        return modeMap[ext] || 'text';
+    }
+
+    var editor = CodeMirror.fromTextArea(document.getElementById('editor'), {
+        mode: getMode(filenameInput.value),
+        theme: 'material-darker',
+        lineNumbers: true,
+        indentUnit: 4,
+        tabSize: 4,
+        indentWithTabs: false,
+        lineWrapping: true,
+        viewportMargin: Infinity
+    });
+
+    filenameInput.addEventListener('input', function() {
+        editor.setOption('mode', getMode(this.value));
+    });
+})();
+</script>
 {% endblock %}

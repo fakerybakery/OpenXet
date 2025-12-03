@@ -25,6 +25,8 @@ pub fn create_router() -> Router<Arc<AppState>> {
         .route("/ui/repos/:repo/tree/:ref/*path", get(tree_path))
         .route("/ui/repos/:repo/blob/:ref/*path", get(blob_view))
         .route("/ui/repos/:repo/edit/:ref/*path", get(edit_file).post(commit_file))
+        .route("/ui/repos/:repo/new/:ref", get(new_file).post(commit_new_file))
+        .route("/ui/repos/:repo/new/:ref/*path", get(new_file_in_dir).post(commit_new_file_in_dir))
         .route("/ui/stats", get(stats))
 }
 
@@ -111,8 +113,9 @@ async fn repo_detail(
         if let Some(root_tree) = repo_handle.get_commit_tree(&commit_id) {
             // For overview tab: try to find and render README
             if active_tab == "overview" {
-                let readme_html = find_and_render_readme(&repo_handle, &root_tree);
-                context.insert("readme_html", &readme_html);
+                if let Some(readme_html) = find_and_render_readme(&repo_handle, &root_tree) {
+                    context.insert("readme_html", &readme_html);
+                }
             }
 
             // For files tab: get root tree entries
@@ -518,25 +521,17 @@ async fn blob_view(
     context.insert("is_binary", &is_binary);
 
     if is_binary {
-        context.insert("lines", &Vec::<String>::new());
+        context.insert("content", &String::new());
         context.insert("line_count", &0);
     } else {
-        // Convert to string and split into lines
+        // Convert to string
         let text = String::from_utf8_lossy(&content);
-        let lines: Vec<String> = text.lines().map(|l| html_escape(l)).collect();
-        context.insert("line_count", &lines.len());
-        context.insert("lines", &lines);
+        let line_count = text.lines().count();
+        context.insert("line_count", &line_count);
+        context.insert("content", &text);
     }
 
     render_template("blob.html", &context)
-}
-
-/// Escape HTML special characters
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 /// Parsed LFS pointer info
@@ -593,6 +588,7 @@ fn format_size(size: u64) -> String {
 #[derive(serde::Deserialize)]
 struct EditForm {
     content: String,
+    filename: String,
     message: Option<String>,
 }
 
@@ -670,6 +666,46 @@ async fn edit_file(
     // File content as string
     let text = String::from_utf8_lossy(&content).to_string();
     context.insert("content", &text);
+    context.insert("is_new", &false);
+
+    render_template("edit.html", &context)
+}
+
+/// New file (GET - show editor for new file) - root level
+async fn new_file(
+    Path((repo, ref_name)): Path<(String, String)>,
+) -> Response {
+    render_new_file_form(&repo, &ref_name, "")
+}
+
+/// New file (GET - show editor for new file) - in directory
+async fn new_file_in_dir(
+    Path((repo, ref_name, dir_path)): Path<(String, String, String)>,
+) -> Response {
+    render_new_file_form(&repo, &ref_name, &dir_path)
+}
+
+fn render_new_file_form(repo: &str, ref_name: &str, dir_path: &str) -> Response {
+    let repo_name = repo.trim_end_matches(".git");
+
+    let mut context = Context::new();
+    context.insert("repo_name", repo_name);
+    context.insert("ref_name", ref_name);
+    context.insert("is_new", &true);
+    context.insert("content", &"");
+
+    // Set initial path based on directory
+    let initial_path = if dir_path.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", dir_path)
+    };
+    context.insert("path", &initial_path);
+    context.insert("file_name", &"");
+
+    // Empty breadcrumbs for new file
+    let breadcrumbs: Vec<Breadcrumb> = Vec::new();
+    context.insert("breadcrumbs", &breadcrumbs);
 
     render_template("edit.html", &context)
 }
@@ -699,6 +735,17 @@ async fn commit_file(
         None => return render_error("Could not read commit tree"),
     };
 
+    // Normalize filename (trim slashes)
+    let new_path = form.filename.trim().trim_matches('/').to_string();
+    if new_path.is_empty() {
+        return render_error("Filename cannot be empty");
+    }
+
+    // Check if this is a rename/move
+    let old_path = path.trim_matches('/');
+    let is_rename = !old_path.is_empty() && old_path != new_path;
+    let is_new = old_path.is_empty();
+
     // Create new blob with the edited content
     let new_content = form.content.as_bytes();
     let new_blob_id = repo_handle.create_object(
@@ -706,16 +753,42 @@ async fn commit_file(
         new_content,
     );
 
-    // Build new tree with the updated file
-    let new_tree_id = match build_updated_tree(&repo_handle, &root_tree, &path, &new_blob_id) {
-        Some(id) => id,
-        None => return render_error("Failed to update tree"),
+    // Build new tree
+    let new_tree_id = if is_rename {
+        // First delete old path, then add new path
+        let tree_after_delete = match build_tree_with_deletion(&repo_handle, &root_tree, old_path) {
+            Some(id) => id,
+            None => return render_error("Failed to delete old file"),
+        };
+        match build_tree_with_addition(&repo_handle, &tree_after_delete, &new_path, &new_blob_id) {
+            Some(id) => id,
+            None => return render_error("Failed to create file at new path"),
+        }
+    } else if is_new {
+        // Just add the new file
+        match build_tree_with_addition(&repo_handle, &root_tree, &new_path, &new_blob_id) {
+            Some(id) => id,
+            None => return render_error("Failed to create file"),
+        }
+    } else {
+        // Simple update
+        match build_updated_tree(&repo_handle, &root_tree, &new_path, &new_blob_id) {
+            Some(id) => id,
+            None => return render_error("Failed to update tree"),
+        }
     };
 
     // Create commit message
+    let default_message = if is_new {
+        format!("Create {}", new_path)
+    } else if is_rename {
+        format!("Rename {} to {}", old_path, new_path)
+    } else {
+        format!("Update {}", new_path)
+    };
     let message = form.message
         .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| format!("Update {}", path));
+        .unwrap_or(default_message);
 
     // Create new commit
     let new_commit_id = repo_handle.create_commit(
@@ -730,7 +803,124 @@ async fn commit_file(
     let _ = repo_handle.update_ref(&format!("refs/heads/{}", ref_name), new_commit_id);
 
     // Redirect to the file view
-    Redirect::to(&format!("/ui/repos/{}/blob/{}/{}", repo_name, ref_name, path)).into_response()
+    Redirect::to(&format!("/ui/repos/{}/blob/{}/{}", repo_name, ref_name, new_path)).into_response()
+}
+
+/// Commit new file (POST) - root level
+async fn commit_new_file(
+    State(state): State<Arc<AppState>>,
+    Path((repo, ref_name)): Path<(String, String)>,
+    Form(form): Form<EditForm>,
+) -> Response {
+    commit_file_impl(state, &repo, &ref_name, "", form).await
+}
+
+/// Commit new file (POST) - in directory
+async fn commit_new_file_in_dir(
+    State(state): State<Arc<AppState>>,
+    Path((repo, ref_name, _dir)): Path<(String, String, String)>,
+    Form(form): Form<EditForm>,
+) -> Response {
+    // The dir in path is just for context; actual path comes from form.filename
+    commit_file_impl(state, &repo, &ref_name, "", form).await
+}
+
+/// Shared implementation for committing files (edit, rename, new)
+async fn commit_file_impl(
+    state: Arc<AppState>,
+    repo: &str,
+    ref_name: &str,
+    original_path: &str,
+    form: EditForm,
+) -> Response {
+    let repo_name = repo.trim_end_matches(".git");
+
+    let repo_handle = match state.repos.get_repo(repo_name) {
+        Ok(r) => r,
+        Err(_) => return render_error(&format!("Repository '{}' not found", repo_name)),
+    };
+
+    // Resolve ref to commit (this will be the parent)
+    let parent_commit_id = match repo_handle.resolve_ref(&format!("refs/heads/{}", ref_name)) {
+        Some(id) => id,
+        None => return render_error(&format!("Branch '{}' not found", ref_name)),
+    };
+
+    // Get the current tree
+    let root_tree = match repo_handle.get_commit_tree(&parent_commit_id) {
+        Some(t) => t,
+        None => return render_error("Could not read commit tree"),
+    };
+
+    // Normalize filename (trim slashes)
+    let new_path = form.filename.trim().trim_matches('/').to_string();
+    if new_path.is_empty() {
+        return render_error("Filename cannot be empty");
+    }
+
+    // Check if this is a rename/move
+    let old_path = original_path.trim_matches('/');
+    let is_rename = !old_path.is_empty() && old_path != new_path;
+    let is_new = old_path.is_empty();
+
+    // Create new blob with the edited content
+    let new_content = form.content.as_bytes();
+    let new_blob_id = repo_handle.create_object(
+        ObjectType::Blob,
+        new_content,
+    );
+
+    // Build new tree
+    let new_tree_id = if is_rename {
+        // First delete old path, then add new path
+        let tree_after_delete = match build_tree_with_deletion(&repo_handle, &root_tree, old_path) {
+            Some(id) => id,
+            None => return render_error("Failed to delete old file"),
+        };
+        match build_tree_with_addition(&repo_handle, &tree_after_delete, &new_path, &new_blob_id) {
+            Some(id) => id,
+            None => return render_error("Failed to create file at new path"),
+        }
+    } else if is_new {
+        // Just add the new file
+        match build_tree_with_addition(&repo_handle, &root_tree, &new_path, &new_blob_id) {
+            Some(id) => id,
+            None => return render_error("Failed to create file"),
+        }
+    } else {
+        // Simple update
+        match build_updated_tree(&repo_handle, &root_tree, &new_path, &new_blob_id) {
+            Some(id) => id,
+            None => return render_error("Failed to update tree"),
+        }
+    };
+
+    // Create commit message
+    let default_message = if is_new {
+        format!("Create {}", new_path)
+    } else if is_rename {
+        format!("Rename {} to {}", old_path, new_path)
+    } else {
+        format!("Update {}", new_path)
+    };
+    let message = form.message
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or(default_message);
+
+    // Create new commit
+    let new_commit_id = repo_handle.create_commit(
+        &new_tree_id,
+        &[parent_commit_id],
+        &message,
+        "Web User",
+        "web@openxet.local",
+    );
+
+    // Update the ref
+    let _ = repo_handle.update_ref(&format!("refs/heads/{}", ref_name), new_commit_id);
+
+    // Redirect to the file view
+    Redirect::to(&format!("/ui/repos/{}/blob/{}/{}", repo_name, ref_name, new_path)).into_response()
 }
 
 /// Build an updated tree with a file changed at the given path
@@ -804,6 +994,127 @@ fn build_tree_recursive(
     let tree_data = serialize_tree(&new_entries);
     let new_tree_id = repo.create_object(ObjectType::Tree, &tree_data);
     Some(new_tree_id)
+}
+
+/// Build a tree with a new file added at the given path
+fn build_tree_with_addition(
+    repo: &Repository,
+    current_tree: &ObjectId,
+    path: &str,
+    new_blob_id: &ObjectId,
+) -> Option<ObjectId> {
+    let parts: Vec<&str> = path.split('/').collect();
+    add_to_tree_recursive(repo, Some(current_tree), &parts, new_blob_id)
+}
+
+fn add_to_tree_recursive(
+    repo: &Repository,
+    current_tree: Option<&ObjectId>,
+    path_parts: &[&str],
+    new_blob_id: &ObjectId,
+) -> Option<ObjectId> {
+    if path_parts.is_empty() {
+        return None;
+    }
+
+    let mut entries: Vec<TreeEntry> = current_tree
+        .and_then(|t| repo.parse_tree(t))
+        .unwrap_or_default();
+
+    let target_name = path_parts[0];
+    let is_final = path_parts.len() == 1;
+
+    if is_final {
+        // Add or replace the file
+        entries.retain(|e| e.name != target_name);
+        entries.push(TreeEntry {
+            mode: "100644".to_string(),
+            name: target_name.to_string(),
+            oid: *new_blob_id,
+            is_dir: false,
+            is_executable: false,
+            is_symlink: false,
+        });
+    } else {
+        // Find or create subdirectory
+        let existing_subtree = entries.iter().find(|e| e.name == target_name && e.is_dir);
+        let subtree_oid = existing_subtree.map(|e| e.oid);
+
+        let new_subtree_id = add_to_tree_recursive(
+            repo,
+            subtree_oid.as_ref(),
+            &path_parts[1..],
+            new_blob_id,
+        )?;
+
+        entries.retain(|e| e.name != target_name);
+        entries.push(TreeEntry {
+            mode: "40000".to_string(),
+            name: target_name.to_string(),
+            oid: new_subtree_id,
+            is_dir: true,
+            is_executable: false,
+            is_symlink: false,
+        });
+    }
+
+    let tree_data = serialize_tree(&entries);
+    Some(repo.create_object(ObjectType::Tree, &tree_data))
+}
+
+/// Build a tree with a file deleted at the given path
+fn build_tree_with_deletion(
+    repo: &Repository,
+    current_tree: &ObjectId,
+    path: &str,
+) -> Option<ObjectId> {
+    let parts: Vec<&str> = path.split('/').collect();
+    delete_from_tree_recursive(repo, current_tree, &parts)
+}
+
+fn delete_from_tree_recursive(
+    repo: &Repository,
+    current_tree: &ObjectId,
+    path_parts: &[&str],
+) -> Option<ObjectId> {
+    if path_parts.is_empty() {
+        return None;
+    }
+
+    let entries = repo.parse_tree(current_tree)?;
+    let target_name = path_parts[0];
+    let is_final = path_parts.len() == 1;
+
+    let mut new_entries: Vec<TreeEntry> = Vec::new();
+
+    for entry in entries {
+        if entry.name == target_name {
+            if is_final {
+                // Skip this entry (delete it)
+                continue;
+            } else {
+                // Recurse into subdirectory
+                let new_subtree_id = delete_from_tree_recursive(
+                    repo,
+                    &entry.oid,
+                    &path_parts[1..],
+                )?;
+                new_entries.push(TreeEntry {
+                    mode: entry.mode,
+                    name: entry.name,
+                    oid: new_subtree_id,
+                    is_dir: true,
+                    is_executable: false,
+                    is_symlink: false,
+                });
+            }
+        } else {
+            new_entries.push(entry);
+        }
+    }
+
+    let tree_data = serialize_tree(&new_entries);
+    Some(repo.create_object(ObjectType::Tree, &tree_data))
 }
 
 /// Serialize tree entries to git tree format

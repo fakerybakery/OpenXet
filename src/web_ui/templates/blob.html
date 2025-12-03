@@ -1,11 +1,19 @@
 {% extends "base.html" %}
 {% block title %}{{ file_name }} - OpenXet{% endblock %}
 {% block content %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
 <style>
-    .code-table { width: 100%; border-collapse: collapse; }
-    .code-table td { padding: 0 8px; vertical-align: top; font-family: Consolas, Monaco, monospace; font-size: 12px; line-height: 1.4; }
-    .line-num { width: 1%; min-width: 40px; text-align: right; color: #555; user-select: none; border-right: 1px solid #333; padding-right: 8px; }
-    .line-content { white-space: pre; color: #ccc; padding-left: 8px; }
+    .code-view { overflow-x: auto; }
+    .code-view pre {
+        margin: 0;
+        padding: 12px;
+        background: transparent !important;
+        font-family: Consolas, Monaco, 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.5;
+    }
+    .code-view code { background: transparent !important; }
+    .hljs { background: transparent !important; }
 </style>
 
 <div class="breadcrumb">
@@ -26,7 +34,7 @@
                 {% else %}<span class="badge">LFS</span>{% endif %}
             {% endif %}
             <span class="text-muted">{{ size_display }}</span>
-            {% if not is_lfs %}<span class="text-muted">{{ line_count }} lines</span>{% endif %}
+            {% if not is_lfs and not is_binary %}<span class="text-muted">{{ line_count }} lines</span>{% endif %}
         </div>
         <div class="flex gap-2">
             {% if not is_lfs and not is_binary %}
@@ -40,13 +48,10 @@
     {% if is_binary %}
     <div class="empty">Binary file not shown</div>
     {% else %}
-    <div style="overflow-x: auto;">
-        <table class="code-table">
-            {% for line in lines %}
-            <tr><td class="line-num">{{ loop.index }}</td><td class="line-content">{{ line }}</td></tr>
-            {% endfor %}
-        </table>
-    </div>
+    <div class="code-view"><pre><code>{{ content }}</code></pre></div>
     {% endif %}
 </div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
 {% endblock %}
