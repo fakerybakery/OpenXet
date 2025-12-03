@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ file_name }} - OpenXet{% endblock %}
+{% block content %}
+<style>
+    .edit-area {
+        width: 100%;
+        min-height: 400px;
+        padding: 8px;
+        background: #1a1a1a;
+        border: none;
+        color: #ccc;
+        font-family: Consolas, Monaco, monospace;
+        font-size: 12px;
+        line-height: 1.4;
+        resize: vertical;
+    }
+    .edit-area:focus { outline: none; }
+    .commit-input {
+        width: 100%;
+        padding: 6px 8px;
+        background: #1a1a1a;
+        border: 1px solid #333;
+        border-radius: 3px;
+        color: #e0e0e0;
+        font-size: 12px;
+    }
+</style>
+
+<div class="breadcrumb">
+    <a href="/ui/repos">Repositories</a> /
+    <a href="/ui/repos/{{ repo_name }}">{{ repo_name }}</a> /
+    <a href="/ui/repos/{{ repo_name }}?tab=files&branch={{ ref_name }}">{{ ref_name }}</a>
+    {% for crumb in breadcrumbs %} / {% if loop.last %}{{ crumb.name }}{% else %}<a href="/ui/repos/{{ repo_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>{% endif %}{% endfor %}
+</div>
+
+<h2 style="margin-bottom: 12px;">Editing {{ file_name }}</h2>
+
+<form method="POST" action="/ui/repos/{{ repo_name }}/edit/{{ ref_name }}/{{ path }}">
+    <div class="card">
+        <div class="file-header">
+            <span class="text-muted">{{ path }}</span>
+        </div>
+        <textarea name="content" class="edit-area" spellcheck="false">{{ content }}</textarea>
+        <div style="padding: 8px 12px; border-top: 1px solid #333; display: flex; gap: 8px; align-items: center;">
+            <input type="text" name="message" class="commit-input" placeholder="Commit message (optional)" style="flex: 1;" />
+            <a href="/ui/repos/{{ repo_name }}/blob/{{ ref_name }}/{{ path }}" class="btn">Cancel</a>
+            <button type="submit" class="btn btn-primary">Commit</button>
+        </div>
+    </div>
+</form>
+{% endblock %}

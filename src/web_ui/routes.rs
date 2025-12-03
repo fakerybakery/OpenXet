@@ -1,7 +1,7 @@
 //! Web UI route handlers.
 
 use axum::{
-    extract::{Path, State, Form},
+    extract::{Path, State, Form, Query},
     http::StatusCode,
     response::{Html, IntoResponse, Response, Redirect},
     routing::get,
@@ -53,10 +53,18 @@ async fn repos_list(State(state): State<Arc<AppState>>) -> Response {
     render_template("repos.html", &context)
 }
 
-/// Repository detail page
+/// Query params for repo page
+#[derive(serde::Deserialize, Default)]
+struct RepoQuery {
+    tab: Option<String>,
+    branch: Option<String>,
+}
+
+/// Repository detail page with tabs
 async fn repo_detail(
     State(state): State<Arc<AppState>>,
     Path(repo): Path<String>,
+    Query(query): Query<RepoQuery>,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
 
@@ -71,25 +79,130 @@ async fn repo_detail(
     let mut context = Context::new();
     context.insert("repo_name", repo_name);
 
-    // Get refs using public API - filter to just branches and extract short name
+    // Get branches
     let git_refs = repo_handle.list_refs();
-    let refs: Vec<RefInfo> = git_refs
+    let branches: Vec<BranchInfo> = git_refs
         .iter()
-        .filter(|r| r.name.starts_with("refs/heads/")) // Only branches, not HEAD
+        .filter(|r| r.name.starts_with("refs/heads/"))
         .map(|r| {
-            let hash = r.target.to_hex();
             let short_name = r.name.strip_prefix("refs/heads/").unwrap_or(&r.name);
-            RefInfo {
+            BranchInfo {
                 name: short_name.to_string(),
-                short_hash: hash.chars().take(7).collect(),
-                hash,
             }
         })
         .collect();
 
-    context.insert("refs", &refs);
+    // Determine current branch: query param > "main" > first branch
+    let current_branch = query.branch
+        .or_else(|| branches.iter().find(|b| b.name == "main").map(|b| b.name.clone()))
+        .or_else(|| branches.first().map(|b| b.name.clone()))
+        .unwrap_or_else(|| "main".to_string());
+
+    let active_tab = query.tab.unwrap_or_else(|| "overview".to_string());
+
+    context.insert("branches", &branches);
+    context.insert("current_branch", &current_branch);
+    context.insert("active_tab", &active_tab);
+
+    // Get commit and tree for current branch
+    let commit_id = repo_handle.resolve_ref(&format!("refs/heads/{}", current_branch));
+
+    if let Some(commit_id) = commit_id {
+        if let Some(root_tree) = repo_handle.get_commit_tree(&commit_id) {
+            // For overview tab: try to find and render README
+            if active_tab == "overview" {
+                let readme_html = find_and_render_readme(&repo_handle, &root_tree);
+                context.insert("readme_html", &readme_html);
+            }
+
+            // For files tab: get root tree entries
+            if active_tab == "files" {
+                if let Some(entries) = repo_handle.parse_tree(&root_tree) {
+                    let entry_infos: Vec<TreeEntryInfo> = entries
+                        .iter()
+                        .map(|e| {
+                            let (is_lfs, lfs_status, lfs_size, lfs_oid) = check_lfs_file(&repo_handle, &state, e);
+                            TreeEntryInfo {
+                                name: e.name.clone(),
+                                full_path: e.name.clone(),
+                                is_dir: e.is_dir,
+                                is_lfs,
+                                lfs_status,
+                                lfs_size,
+                                lfs_oid,
+                            }
+                        })
+                        .collect();
+                    context.insert("entries", &entry_infos);
+                }
+            }
+        }
+    }
 
     render_template("repo.html", &context)
+}
+
+/// Branch info for templates
+#[derive(serde::Serialize)]
+struct BranchInfo {
+    name: String,
+}
+
+/// Find README file and render as HTML
+fn find_and_render_readme(repo: &Repository, tree_id: &ObjectId) -> Option<String> {
+    let entries = repo.parse_tree(tree_id)?;
+
+    // Look for README variants (case-insensitive)
+    let readme_names = ["README.md", "readme.md", "README", "readme", "README.txt", "readme.txt"];
+
+    for readme_name in readme_names {
+        if let Some(entry) = entries.iter().find(|e| e.name.eq_ignore_ascii_case(readme_name) && !e.is_dir) {
+            if let Some(content) = repo.get_blob_content(&entry.oid) {
+                // Check it's not binary
+                if content.iter().take(8000).any(|&b| b == 0) {
+                    return None;
+                }
+
+                let text = String::from_utf8_lossy(&content);
+
+                // If it's a .md file, render as markdown
+                if entry.name.to_lowercase().ends_with(".md") {
+                    return Some(templates::render_markdown(&text));
+                } else {
+                    // Plain text - wrap in <pre>
+                    return Some(format!("<pre>{}</pre>", ammonia::clean(&text)));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Check if a tree entry is an LFS file and get its status
+fn check_lfs_file(
+    repo: &Repository,
+    state: &Arc<AppState>,
+    entry: &crate::git::TreeEntry,
+) -> (bool, Option<String>, Option<String>, Option<String>) {
+    if entry.is_dir {
+        return (false, None, None, None);
+    }
+
+    if let Some(content) = repo.get_blob_content(&entry.oid) {
+        if let Some(lfs_info) = parse_lfs_pointer(&content) {
+            let status = state.cas.get_lfs_object_status(&lfs_info.oid);
+            let status_str = status.map(|s| match s {
+                crate::cas::store::LfsObjectStatus::Raw => "raw".to_string(),
+                crate::cas::store::LfsObjectStatus::Processing => "processing".to_string(),
+                crate::cas::store::LfsObjectStatus::Chunked => "chunked".to_string(),
+            });
+            let oid_hex = lfs_info.oid.to_hex();
+            return (true, status_str, Some(format_size(lfs_info.size)), Some(oid_hex));
+        }
+    }
+
+    (false, None, None, None)
 }
 
 /// Stats page
@@ -130,14 +243,6 @@ fn render_error(message: &str) -> Response {
         Ok(html) => (StatusCode::NOT_FOUND, Html(html)).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, message.to_string()).into_response(),
     }
-}
-
-/// Reference info for templates
-#[derive(serde::Serialize)]
-struct RefInfo {
-    name: String,
-    hash: String,
-    short_hash: String,
 }
 
 /// Tree entry info for templates
@@ -226,6 +331,17 @@ async fn tree_view_impl(
     context.insert("repo_name", repo_name);
     context.insert("ref_name", ref_name);
     context.insert("path", path);
+
+    // Get branches for switcher
+    let git_refs = repo_handle.list_refs();
+    let branches: Vec<BranchInfo> = git_refs
+        .iter()
+        .filter(|r| r.name.starts_with("refs/heads/"))
+        .map(|r| BranchInfo {
+            name: r.name.strip_prefix("refs/heads/").unwrap_or(&r.name).to_string(),
+        })
+        .collect();
+    context.insert("branches", &branches);
 
     // Current directory name
     let current_name = if path.is_empty() {
