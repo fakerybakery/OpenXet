@@ -31,7 +31,7 @@
 
 <h2 style="margin-bottom: 12px;">{% if is_new %}New file{% else %}Editing {{ file_name }}{% endif %}</h2>
 
-<form method="POST" action="/ui/repos/{{ repo_name }}/edit/{{ ref_name }}/{{ path }}" id="edit-form">
+<form method="POST" action="/ui/repos/{{ repo_name }}/{% if is_new %}new{% else %}edit{% endif %}/{{ ref_name }}{% if path %}/{{ path }}{% endif %}" id="edit-form">
     <div class="card">
         <div class="file-header">
             <input type="text" name="filename" class="edit-input" style="flex: 1; max-width: 400px;" value="{{ path }}" placeholder="path/to/file.txt" />
