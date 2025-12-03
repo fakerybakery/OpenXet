@@ -7,6 +7,7 @@ pub mod lfs_object;
 pub mod lfs_chunk;
 pub mod cas_chunk;
 pub mod cas_block;
+pub mod file_segment;
 
 // Re-export entities for convenient access (may not all be used yet)
 #[allow(unused_imports)]
@@ -23,3 +24,5 @@ pub use lfs_chunk::Entity as LfsChunk;
 pub use cas_chunk::Entity as CasChunk;
 #[allow(unused_imports)]
 pub use cas_block::Entity as CasBlock;
+#[allow(unused_imports)]
+pub use file_segment::Entity as FileSegment;

@@ -556,6 +556,47 @@ impl Repository {
 
         None
     }
+
+    /// Store an object by type and raw data (public API for web editing)
+    pub fn create_object(&self, object_type: ObjectType, data: &[u8]) -> ObjectId {
+        let object = GitObject::new(object_type, Bytes::copy_from_slice(data));
+        self.store_object(object)
+    }
+
+    /// Create a new commit
+    pub fn create_commit(
+        &self,
+        tree_id: &ObjectId,
+        parent_ids: &[ObjectId],
+        message: &str,
+        author_name: &str,
+        author_email: &str,
+    ) -> ObjectId {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let mut commit_data = String::new();
+        commit_data.push_str(&format!("tree {}\n", tree_id.to_hex()));
+        for parent in parent_ids {
+            commit_data.push_str(&format!("parent {}\n", parent.to_hex()));
+        }
+        commit_data.push_str(&format!(
+            "author {} <{}> {} +0000\n",
+            author_name, author_email, timestamp
+        ));
+        commit_data.push_str(&format!(
+            "committer {} <{}> {} +0000\n",
+            author_name, author_email, timestamp
+        ));
+        commit_data.push_str(&format!("\n{}\n", message));
+
+        let object = GitObject::new(ObjectType::Commit, Bytes::from(commit_data));
+        self.store_object(object)
+    }
 }
 
 /// A tree entry (file or subdirectory)

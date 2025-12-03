@@ -149,6 +149,29 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
         r#"CREATE INDEX IF NOT EXISTS idx_cas_chunks_block ON cas_chunks(block_hash)"#.to_string(),
     )).await?;
 
+    // File segments table (for file reconstruction - maps file hash to block ranges)
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"
+        CREATE TABLE IF NOT EXISTS file_segments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_hash TEXT NOT NULL,
+            segment_index INTEGER NOT NULL,
+            block_hash TEXT NOT NULL,
+            byte_start INTEGER NOT NULL,
+            byte_end INTEGER NOT NULL,
+            segment_size INTEGER NOT NULL,
+            FOREIGN KEY (block_hash) REFERENCES cas_blocks(hash) ON DELETE CASCADE
+        )
+        "#.to_string(),
+    )).await?;
+
+    // Create index for file segment lookups
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_file_segments_file ON file_segments(file_hash)"#.to_string(),
+    )).await?;
+
     tracing::info!("Database tables initialized");
     Ok(())
 }

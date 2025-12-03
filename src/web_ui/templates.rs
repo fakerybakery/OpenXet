@@ -15,6 +15,7 @@ pub static TEMPLATES: Lazy<Tera> = Lazy::new(|| {
         ("repo.html", REPO_TEMPLATE),
         ("tree.html", TREE_TEMPLATE),
         ("blob.html", BLOB_TEMPLATE),
+        ("edit.html", EDIT_TEMPLATE),
         ("error.html", ERROR_TEMPLATE),
     ])
     .expect("Failed to load templates");
@@ -28,7 +29,7 @@ pub fn render(template: &str, context: &Context) -> Result<String, tera::Error> 
 }
 
 // =============================================================================
-// Embedded Templates
+// Embedded Templates - OpenXet Dark Mode Design
 // =============================================================================
 
 const BASE_TEMPLATE: &str = r##"<!DOCTYPE html>
@@ -36,145 +37,280 @@ const BASE_TEMPLATE: &str = r##"<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Git-Xet{% endblock %}</title>
+    <title>{% block title %}OpenXet{% endblock %}</title>
     <style>
         :root {
-            --bg: #0d1117;
-            --bg-secondary: #161b22;
-            --border: #30363d;
-            --text: #c9d1d9;
-            --text-muted: #8b949e;
-            --link: #58a6ff;
-            --accent: #238636;
+            --bg: #0a0a0a;
+            --bg-secondary: #141414;
+            --foreground: #fafafa;
+            --foreground-secondary: rgba(250, 250, 250, 0.7);
+            --foreground-tertiary: rgba(250, 250, 250, 0.4);
+            --border: #262626;
+            --border-subtle: #1a1a1a;
+            --accent: #fafafa;
         }
+
         * { box-sizing: border-box; margin: 0; padding: 0; }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
             background: var(--bg);
-            color: var(--text);
-            line-height: 1.5;
+            color: var(--foreground);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
         }
-        a { color: var(--link); text-decoration: none; }
-        a:hover { text-decoration: underline; }
 
+        a {
+            color: var(--foreground);
+            text-decoration: none;
+            transition: opacity 0.15s;
+        }
+        a:hover { opacity: 0.7; }
+
+        /* Header */
         .header {
-            background: var(--bg-secondary);
-            border-bottom: 1px solid var(--border);
-            padding: 16px 24px;
+            border-bottom: 1px solid var(--border-subtle);
+            padding: 20px 32px;
         }
         .header-content {
             max-width: 1200px;
             margin: 0 auto;
             display: flex;
             align-items: center;
-            gap: 24px;
+            justify-content: space-between;
         }
         .logo {
-            font-size: 20px;
+            font-size: 18px;
             font-weight: 600;
-            color: var(--text);
+            letter-spacing: -0.02em;
+            color: var(--foreground);
         }
-        .nav { display: flex; gap: 16px; }
-        .nav a { color: var(--text-muted); }
-        .nav a:hover { color: var(--text); text-decoration: none; }
+        .nav {
+            display: flex;
+            gap: 32px;
+        }
+        .nav a {
+            color: var(--foreground-secondary);
+            font-size: 14px;
+        }
+        .nav a:hover {
+            color: var(--foreground);
+            opacity: 1;
+        }
 
+        /* Layout */
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            padding: 24px;
+            padding: 48px 32px;
         }
 
+        /* Typography */
+        h1 {
+            font-size: 32px;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            margin-bottom: 32px;
+        }
+        h2 {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--foreground-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 16px;
+        }
+
+        /* Cards */
         .card {
             background: var(--bg-secondary);
             border: 1px solid var(--border);
-            border-radius: 6px;
-            margin-bottom: 16px;
+            border-radius: 16px;
+            overflow: hidden;
         }
-        .card-header {
-            padding: 16px;
-            border-bottom: 1px solid var(--border);
-            font-weight: 600;
+        .card + .card {
+            margin-top: 24px;
         }
-        .card-body { padding: 16px; }
 
+        /* Lists */
         .list { list-style: none; }
         .list-item {
-            padding: 12px 16px;
-            border-bottom: 1px solid var(--border);
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-subtle);
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 16px;
+            transition: background 0.15s;
         }
         .list-item:last-child { border-bottom: none; }
-        .list-item:hover { background: rgba(255,255,255,0.02); }
+        .list-item:hover { background: rgba(255, 255, 255, 0.02); }
+        .list-item a { flex: 1; }
 
+        /* Icons */
         .icon {
-            width: 20px;
-            height: 20px;
-            fill: var(--text-muted);
+            width: 18px;
+            height: 18px;
+            color: var(--foreground-tertiary);
+            flex-shrink: 0;
         }
+        .icon-folder { color: var(--foreground-secondary); }
 
+        /* Badges */
         .badge {
-            font-size: 12px;
-            padding: 2px 8px;
-            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+            padding: 4px 10px;
+            border-radius: 100px;
             background: var(--border);
-            color: var(--text-muted);
+            color: var(--foreground-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+        }
+        .badge-success {
+            background: rgba(34, 197, 94, 0.15);
+            color: #4ade80;
+        }
+        .badge-warning {
+            background: rgba(234, 179, 8, 0.15);
+            color: #facc15;
+        }
+        .badge-info {
+            background: rgba(59, 130, 246, 0.15);
+            color: #60a5fa;
         }
 
+        /* Stats */
         .stats {
             display: flex;
-            gap: 24px;
-            margin-bottom: 24px;
+            gap: 16px;
+            margin-bottom: 48px;
         }
         .stat {
             background: var(--bg-secondary);
             border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 16px 24px;
+            border-radius: 16px;
+            padding: 24px 32px;
+            min-width: 160px;
         }
         .stat-value {
-            font-size: 32px;
+            font-size: 36px;
             font-weight: 600;
+            letter-spacing: -0.02em;
         }
         .stat-label {
-            color: var(--text-muted);
+            color: var(--foreground-tertiary);
+            font-size: 13px;
+            margin-top: 4px;
+        }
+
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            border-radius: 100px;
             font-size: 14px;
+            font-weight: 500;
+            transition: all 0.15s;
+            border: none;
+            cursor: pointer;
+        }
+        .btn-primary {
+            background: var(--foreground);
+            color: var(--bg);
+        }
+        .btn-primary:hover {
+            opacity: 0.9;
+        }
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--foreground);
+        }
+        .btn-secondary:hover {
+            background: var(--bg-secondary);
+            border-color: var(--foreground-tertiary);
         }
 
-        .empty {
-            text-align: center;
-            padding: 48px;
-            color: var(--text-muted);
+        /* Code */
+        code {
+            font-family: 'SF Mono', 'Consolas', 'Liberation Mono', Menlo, monospace;
+            font-size: 13px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            padding: 12px 16px;
+            border-radius: 8px;
+            display: block;
+            color: var(--foreground-secondary);
         }
 
+        /* Breadcrumb */
         .breadcrumb {
             display: flex;
+            align-items: center;
             gap: 8px;
-            margin-bottom: 16px;
-            color: var(--text-muted);
-        }
-        .breadcrumb a { color: var(--link); }
-
-        code {
-            background: var(--bg);
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-family: monospace;
+            margin-bottom: 24px;
             font-size: 14px;
+            color: var(--foreground-tertiary);
+        }
+        .breadcrumb a { color: var(--foreground-secondary); }
+        .breadcrumb a:hover { color: var(--foreground); opacity: 1; }
+        .breadcrumb-sep { color: var(--foreground-tertiary); }
+
+        /* Empty state */
+        .empty {
+            text-align: center;
+            padding: 64px 32px;
+            color: var(--foreground-tertiary);
+        }
+        .empty p + p { margin-top: 8px; }
+
+        /* Utility */
+        .text-secondary { color: var(--foreground-secondary); }
+        .text-tertiary { color: var(--foreground-tertiary); }
+        .text-sm { font-size: 13px; }
+        .mt-2 { margin-top: 8px; }
+        .mt-4 { margin-top: 16px; }
+        .mt-6 { margin-top: 24px; }
+        .mb-4 { margin-bottom: 16px; }
+        .flex { display: flex; }
+        .items-center { align-items: center; }
+        .justify-between { justify-content: space-between; }
+        .gap-3 { gap: 12px; }
+        .gap-4 { gap: 16px; }
+
+        /* Section headers */
+        .section-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-subtle);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .section-title {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--foreground-secondary);
         }
 
-        .file-icon { color: var(--text-muted); }
-        .folder-icon { color: #54aeff; }
+        /* Mobile */
+        @media (max-width: 768px) {
+            .header { padding: 16px 20px; }
+            .container { padding: 32px 20px; }
+            .stats { flex-wrap: wrap; }
+            .stat { min-width: calc(50% - 8px); }
+            h1 { font-size: 24px; }
+            .nav { gap: 20px; }
+        }
     </style>
 </head>
 <body>
     <header class="header">
         <div class="header-content">
-            <a href="/" class="logo">Git-Xet</a>
+            <a href="/" class="logo">OpenXet</a>
             <nav class="nav">
                 <a href="/ui/repos">Repositories</a>
-                <a href="/ui/stats">Stats</a>
             </nav>
         </div>
     </header>
@@ -185,9 +321,9 @@ const BASE_TEMPLATE: &str = r##"<!DOCTYPE html>
 </html>"##;
 
 const INDEX_TEMPLATE: &str = r##"{% extends "base.html" %}
-{% block title %}Git-Xet Server{% endblock %}
+{% block title %}OpenXet{% endblock %}
 {% block content %}
-<h1 style="margin-bottom: 24px;">Welcome to Git-Xet Server</h1>
+<h1>Dashboard</h1>
 
 <div class="stats">
     <div class="stat">
@@ -204,158 +340,176 @@ const INDEX_TEMPLATE: &str = r##"{% extends "base.html" %}
     </div>
 </div>
 
+<h2>Quick Start</h2>
 <div class="card">
-    <div class="card-header">Quick Start</div>
-    <div class="card-body">
-        <p style="margin-bottom: 12px;">Clone a repository:</p>
+    <div style="padding: 24px;">
+        <p class="text-secondary mb-4">Clone a repository</p>
         <code>git clone http://localhost:8080/REPO_NAME.git</code>
 
-        <p style="margin: 16px 0 12px;">Push to a repository:</p>
-        <code>git push http://localhost:8080/REPO_NAME.git main</code>
+        <p class="text-secondary mb-4 mt-6">Push to create a new repository</p>
+        <code>git push http://localhost:8080/my-repo.git main</code>
     </div>
 </div>
 
+{% if repos %}
+<h2 class="mt-6">Recent Repositories</h2>
 <div class="card">
-    <div class="card-header">Recent Repositories</div>
-    {% if repos %}
     <ul class="list">
         {% for repo in repos %}
         <li class="list-item">
-            <svg class="icon folder-icon" viewBox="0 0 16 16"><path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/></svg>
+            <svg class="icon icon-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+            </svg>
             <a href="/ui/repos/{{ repo }}">{{ repo }}</a>
         </li>
         {% endfor %}
     </ul>
-    {% else %}
-    <div class="empty">No repositories yet</div>
-    {% endif %}
 </div>
+{% endif %}
 {% endblock %}"##;
 
 const REPOS_TEMPLATE: &str = r##"{% extends "base.html" %}
-{% block title %}Repositories - Git-Xet{% endblock %}
+{% block title %}Repositories - OpenXet{% endblock %}
 {% block content %}
-<h1 style="margin-bottom: 24px;">Repositories</h1>
+<h1>Repositories</h1>
 
 <div class="card">
-    <div class="card-header">All Repositories ({{ repos | length }})</div>
+    <div class="section-header">
+        <span class="section-title">All repositories</span>
+        <span class="badge">{{ repos | length }}</span>
+    </div>
     {% if repos %}
     <ul class="list">
         {% for repo in repos %}
         <li class="list-item">
-            <svg class="icon folder-icon" viewBox="0 0 16 16"><path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/></svg>
+            <svg class="icon icon-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+            </svg>
             <a href="/ui/repos/{{ repo }}">{{ repo }}</a>
         </li>
         {% endfor %}
     </ul>
     {% else %}
     <div class="empty">
-        <p>No repositories yet.</p>
-        <p style="margin-top: 8px;">Create one by pushing:</p>
-        <code style="display: inline-block; margin-top: 8px;">git push http://localhost:8080/my-repo.git main</code>
+        <p>No repositories yet</p>
+        <p class="text-sm mt-2">Push to create your first repository</p>
+        <code class="mt-4" style="display: inline-block; text-align: left;">git push http://localhost:8080/my-repo.git main</code>
     </div>
     {% endif %}
 </div>
 {% endblock %}"##;
 
 const REPO_TEMPLATE: &str = r##"{% extends "base.html" %}
-{% block title %}{{ repo_name }} - Git-Xet{% endblock %}
+{% block title %}{{ repo_name }} - OpenXet{% endblock %}
 {% block content %}
 <div class="breadcrumb">
     <a href="/ui/repos">Repositories</a>
-    <span>/</span>
+    <span class="breadcrumb-sep">/</span>
     <span>{{ repo_name }}</span>
 </div>
 
-<h1 style="margin-bottom: 24px;">{{ repo_name }}</h1>
+<h1>{{ repo_name }}</h1>
 
+<h2>Clone</h2>
 <div class="card">
-    <div class="card-header">Clone</div>
-    <div class="card-body">
+    <div style="padding: 20px;">
         <code>git clone http://localhost:8080/{{ repo_name }}.git</code>
     </div>
 </div>
 
+<h2 class="mt-6">Branches</h2>
 <div class="card">
-    <div class="card-header">Branches</div>
     {% if refs %}
     <ul class="list">
         {% for ref in refs %}
         <li class="list-item">
-            <svg class="icon" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6A2.5 2.5 0 0110 8.5H6a1 1 0 00-1 1v1.128a2.251 2.251 0 11-1.5 0V5.372a2.25 2.25 0 111.5 0v1.836A2.492 2.492 0 016 7h4a1 1 0 001-1v-.628A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z"/></svg>
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+            </svg>
             <a href="/ui/repos/{{ repo_name }}/tree/{{ ref.name }}">{{ ref.name }}</a>
             <span class="badge">{{ ref.short_hash }}</span>
         </li>
         {% endfor %}
     </ul>
     {% else %}
-    <div class="empty">No branches yet (empty repository)</div>
+    <div class="empty">
+        <p>No branches yet</p>
+        <p class="text-sm">This repository is empty</p>
+    </div>
     {% endif %}
 </div>
 {% endblock %}"##;
 
 const TREE_TEMPLATE: &str = r##"{% extends "base.html" %}
-{% block title %}{{ repo_name }}/{{ path }} - Git-Xet{% endblock %}
+{% block title %}{{ repo_name }}/{{ path }} - OpenXet{% endblock %}
 {% block content %}
 <div class="breadcrumb">
     <a href="/ui/repos">Repositories</a>
-    <span>/</span>
+    <span class="breadcrumb-sep">/</span>
     <a href="/ui/repos/{{ repo_name }}">{{ repo_name }}</a>
-    <span>/</span>
+    <span class="breadcrumb-sep">/</span>
     <a href="/ui/repos/{{ repo_name }}/tree/{{ ref_name }}">{{ ref_name }}</a>
     {% for crumb in breadcrumbs %}
-    <span>/</span>
+    <span class="breadcrumb-sep">/</span>
     <a href="/ui/repos/{{ repo_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>
     {% endfor %}
 </div>
 
-<h1 style="margin-bottom: 24px; display: flex; align-items: center; gap: 12px;">
-    <svg class="icon folder-icon" style="width: 32px; height: 32px;" viewBox="0 0 16 16"><path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/></svg>
+<h1 class="flex items-center gap-3">
+    <svg class="icon icon-folder" style="width: 28px; height: 28px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+    </svg>
     {{ current_name }}
 </h1>
 
 <div class="card">
-    <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-        <span>Files</span>
-        <span class="badge">{{ entries | length }} items</span>
+    <div class="section-header">
+        <span class="section-title">Files</span>
+        <span class="badge">{{ entries | length }}</span>
     </div>
-    {% if entries %}
+    {% if entries or parent_path %}
     <ul class="list">
         {% if parent_path %}
         <li class="list-item">
-            <svg class="icon folder-icon" viewBox="0 0 16 16"><path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/></svg>
+            <svg class="icon icon-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+            </svg>
             <a href="/ui/repos/{{ repo_name }}/tree/{{ ref_name }}{% if parent_path != "" %}/{{ parent_path }}{% endif %}">..</a>
         </li>
         {% endif %}
         {% for entry in entries %}
-        <li class="list-item" style="display: flex; align-items: center; justify-content: space-between;">
-            <div style="display: flex; align-items: center; gap: 12px;">
-                {% if entry.is_dir %}
-                <svg class="icon folder-icon" viewBox="0 0 16 16"><path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/></svg>
-                <a href="/ui/repos/{{ repo_name }}/tree/{{ ref_name }}/{{ entry.full_path }}">{{ entry.name }}</a>
+        <li class="list-item">
+            {% if entry.is_dir %}
+            <svg class="icon icon-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+            </svg>
+            <a href="/ui/repos/{{ repo_name }}/tree/{{ ref_name }}/{{ entry.full_path }}">{{ entry.name }}</a>
+            {% else %}
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+            </svg>
+            <a href="/ui/repos/{{ repo_name }}/blob/{{ ref_name }}/{{ entry.full_path }}">{{ entry.name }}</a>
+            {% if entry.is_lfs %}
+                {% if entry.lfs_status == "chunked" %}
+                <span class="badge badge-success">Xet</span>
+                {% elif entry.lfs_status == "processing" %}
+                <span class="badge badge-warning">Processing</span>
+                {% elif entry.lfs_status == "raw" %}
+                <span class="badge badge-info">LFS</span>
                 {% else %}
-                <svg class="icon file-icon" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M3.75 1.5a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 00.25-.25V6h-2.75A1.75 1.75 0 019 4.25V1.5H3.75zm6.75.062V4.25c0 .138.112.25.25.25h2.688a.252.252 0 00-.011-.013l-2.914-2.914a.272.272 0 00-.013-.011zM2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0113.25 16h-9.5A1.75 1.75 0 012 14.25V1.75z"/></svg>
-                <a href="/ui/repos/{{ repo_name }}/blob/{{ ref_name }}/{{ entry.full_path }}">{{ entry.name }}</a>
-                {% if entry.is_lfs %}
-                    {% if entry.lfs_status == "chunked" %}
-                    <span class="badge" style="background: #238636; color: white;">Xet</span>
-                    {% elif entry.lfs_status == "processing" %}
-                    <span class="badge" style="background: #9e6a03; color: white;">Processing</span>
-                    {% elif entry.lfs_status == "raw" %}
-                    <span class="badge" style="background: #1f6feb; color: white;">LFS</span>
-                    {% else %}
-                    <span class="badge" style="background: #6e7681;">LFS (not uploaded)</span>
-                    {% endif %}
+                <span class="badge">LFS</span>
                 {% endif %}
-                {% endif %}
-            </div>
-            <div style="display: flex; align-items: center; gap: 12px;">
+            {% endif %}
+            {% endif %}
+            <div class="flex items-center gap-3" style="margin-left: auto;">
                 {% if entry.lfs_size %}
-                <span style="color: var(--text-muted); font-size: 13px;">{{ entry.lfs_size }}</span>
+                <span class="text-tertiary text-sm">{{ entry.lfs_size }}</span>
                 {% endif %}
                 {% if entry.is_lfs and entry.lfs_status and entry.lfs_oid %}
-                <a href="/{{ repo_name }}.git/info/lfs/objects/{{ entry.lfs_oid }}" class="download-btn" style="padding: 4px 8px; background: var(--border); border-radius: 4px; font-size: 12px; color: var(--text);" title="Download">
-                    <svg style="width: 14px; height: 14px; vertical-align: middle;" viewBox="0 0 16 16" fill="currentColor"><path d="M2.75 14A1.75 1.75 0 011 12.25v-2.5a.75.75 0 011.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 00.25-.25v-2.5a.75.75 0 011.5 0v2.5A1.75 1.75 0 0113.25 14H2.75z"/><path d="M7.25 7.689V2a.75.75 0 011.5 0v5.689l1.97-1.969a.749.749 0 111.06 1.06l-3.25 3.25a.749.749 0 01-1.06 0L4.22 6.78a.749.749 0 111.06-1.06l1.97 1.969z"/></svg>
+                <a href="/{{ repo_name }}.git/info/lfs/objects/{{ entry.lfs_oid }}" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">
+                    <svg style="width: 14px; height: 14px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                    </svg>
                 </a>
                 {% endif %}
             </div>
@@ -363,27 +517,36 @@ const TREE_TEMPLATE: &str = r##"{% extends "base.html" %}
         {% endfor %}
     </ul>
     {% else %}
-    <div class="empty">Empty directory</div>
+    <div class="empty">
+        <p>Empty directory</p>
+    </div>
     {% endif %}
 </div>
 {% endblock %}"##;
 
 const BLOB_TEMPLATE: &str = r##"{% extends "base.html" %}
-{% block title %}{{ repo_name }}/{{ path }} - Git-Xet{% endblock %}
+{% block title %}{{ repo_name }}/{{ path }} - OpenXet{% endblock %}
 {% block content %}
 <style>
     .code-container {
-        background: #0d1117;
-        border-radius: 6px;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 16px;
         overflow: hidden;
     }
     .code-header {
-        padding: 8px 16px;
-        background: var(--bg-secondary);
-        border-bottom: 1px solid var(--border);
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--border-subtle);
         display: flex;
         justify-content: space-between;
         align-items: center;
+    }
+    .code-meta {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        font-size: 13px;
+        color: var(--foreground-secondary);
     }
     .code-content {
         overflow-x: auto;
@@ -393,40 +556,41 @@ const BLOB_TEMPLATE: &str = r##"{% extends "base.html" %}
         border-collapse: collapse;
         font-family: 'SF Mono', 'Consolas', 'Liberation Mono', Menlo, monospace;
         font-size: 13px;
-        line-height: 1.5;
+        line-height: 1.6;
     }
     .code-table td {
-        padding: 0 16px;
+        padding: 0 20px;
         vertical-align: top;
     }
     .line-number {
         width: 1%;
         min-width: 50px;
         text-align: right;
-        color: var(--text-muted);
+        color: var(--foreground-tertiary);
         user-select: none;
-        padding-right: 16px;
-        border-right: 1px solid var(--border);
+        padding-right: 20px;
+        border-right: 1px solid var(--border-subtle);
     }
     .line-content {
         white-space: pre;
-        color: var(--text);
+        color: var(--foreground-secondary);
+        padding-left: 20px;
     }
     .binary-notice {
-        padding: 48px;
+        padding: 64px;
         text-align: center;
-        color: var(--text-muted);
+        color: var(--foreground-tertiary);
     }
 </style>
 
 <div class="breadcrumb">
     <a href="/ui/repos">Repositories</a>
-    <span>/</span>
+    <span class="breadcrumb-sep">/</span>
     <a href="/ui/repos/{{ repo_name }}">{{ repo_name }}</a>
-    <span>/</span>
+    <span class="breadcrumb-sep">/</span>
     <a href="/ui/repos/{{ repo_name }}/tree/{{ ref_name }}">{{ ref_name }}</a>
     {% for crumb in breadcrumbs %}
-    <span>/</span>
+    <span class="breadcrumb-sep">/</span>
     {% if loop.last %}
     <span>{{ crumb.name }}</span>
     {% else %}
@@ -435,41 +599,47 @@ const BLOB_TEMPLATE: &str = r##"{% extends "base.html" %}
     {% endfor %}
 </div>
 
-<h1 style="margin-bottom: 24px; display: flex; align-items: center; gap: 12px;">
-    <svg class="icon file-icon" style="width: 32px; height: 32px;" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M3.75 1.5a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 00.25-.25V6h-2.75A1.75 1.75 0 019 4.25V1.5H3.75zm6.75.062V4.25c0 .138.112.25.25.25h2.688a.252.252 0 00-.011-.013l-2.914-2.914a.272.272 0 00-.013-.011zM2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0113.25 16h-9.5A1.75 1.75 0 012 14.25V1.75z"/></svg>
-    {{ file_name }}
-    {% if is_lfs %}
-        {% if lfs_status == "chunked" %}
-        <span class="badge" style="background: #238636; color: white;">Xet</span>
-        {% elif lfs_status == "processing" %}
-        <span class="badge" style="background: #9e6a03; color: white;">Processing</span>
-        {% elif lfs_status == "raw" %}
-        <span class="badge" style="background: #1f6feb; color: white;">LFS</span>
-        {% else %}
-        <span class="badge" style="background: #6e7681;">LFS (not uploaded)</span>
+<div class="flex items-center justify-between" style="margin-bottom: 32px;">
+    <h1 class="flex items-center gap-3" style="margin-bottom: 0;">
+        <svg class="icon" style="width: 28px; height: 28px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+        </svg>
+        {{ file_name }}
+        {% if is_lfs %}
+            {% if lfs_status == "chunked" %}
+            <span class="badge badge-success">Xet</span>
+            {% elif lfs_status == "processing" %}
+            <span class="badge badge-warning">Processing</span>
+            {% elif lfs_status == "raw" %}
+            <span class="badge badge-info">LFS</span>
+            {% else %}
+            <span class="badge">LFS</span>
+            {% endif %}
         {% endif %}
+    </h1>
+    {% if is_lfs and lfs_status and lfs_oid %}
+    <a href="/{{ repo_name }}.git/info/lfs/objects/{{ lfs_oid }}" class="btn btn-primary">
+        <svg style="width: 16px; height: 16px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+        </svg>
+        Download
+    </a>
     {% endif %}
-</h1>
+</div>
 
-<div class="card code-container">
+<div class="code-container">
     <div class="code-header">
-        <div style="display: flex; align-items: center; gap: 12px;">
+        <div class="code-meta">
             <span>{{ size_display }}</span>
             {% if not is_lfs %}
-            <span class="badge">{{ line_count }} lines</span>
+            <span>{{ line_count }} lines</span>
             {% endif %}
         </div>
-        {% if is_lfs and lfs_status and lfs_oid %}
-        <a href="/{{ repo_name }}.git/info/lfs/objects/{{ lfs_oid }}" style="padding: 6px 12px; background: var(--accent); border-radius: 6px; font-size: 13px; color: white; display: inline-flex; align-items: center; gap: 6px;">
-            <svg style="width: 16px; height: 16px;" viewBox="0 0 16 16" fill="currentColor"><path d="M2.75 14A1.75 1.75 0 011 12.25v-2.5a.75.75 0 011.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 00.25-.25v-2.5a.75.75 0 011.5 0v2.5A1.75 1.75 0 0113.25 14H2.75z"/><path d="M7.25 7.689V2a.75.75 0 011.5 0v5.689l1.97-1.969a.749.749 0 111.06 1.06l-3.25 3.25a.749.749 0 01-1.06 0L4.22 6.78a.749.749 0 111.06-1.06l1.97 1.969z"/></svg>
-            Download
-        </a>
-        {% endif %}
     </div>
     {% if is_binary %}
     <div class="binary-notice">
         <p>Binary file not shown</p>
-        <p style="margin-top: 8px; font-size: 14px;">{{ size_display }}</p>
+        <p class="text-sm mt-2">{{ size_display }}</p>
     </div>
     {% else %}
     <div class="code-content">
@@ -486,14 +656,117 @@ const BLOB_TEMPLATE: &str = r##"{% extends "base.html" %}
 </div>
 {% endblock %}"##;
 
+const EDIT_TEMPLATE: &str = r##"{% extends "base.html" %}
+{% block title %}Edit {{ file_name }} - OpenXet{% endblock %}
+{% block content %}
+<style>
+    .edit-container {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        overflow: hidden;
+    }
+    .edit-header {
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--border-subtle);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .edit-textarea {
+        width: 100%;
+        min-height: 500px;
+        padding: 20px;
+        background: var(--bg);
+        border: none;
+        color: var(--foreground-secondary);
+        font-family: 'SF Mono', 'Consolas', 'Liberation Mono', Menlo, monospace;
+        font-size: 13px;
+        line-height: 1.6;
+        resize: vertical;
+    }
+    .edit-textarea:focus {
+        outline: none;
+    }
+    .commit-section {
+        padding: 20px;
+        border-top: 1px solid var(--border-subtle);
+        background: var(--bg-secondary);
+    }
+    .commit-input {
+        width: 100%;
+        padding: 12px 16px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--foreground);
+        font-size: 14px;
+        margin-bottom: 16px;
+    }
+    .commit-input:focus {
+        outline: none;
+        border-color: var(--foreground-tertiary);
+    }
+    .commit-input::placeholder {
+        color: var(--foreground-tertiary);
+    }
+    .button-group {
+        display: flex;
+        gap: 12px;
+        justify-content: flex-end;
+    }
+</style>
+
+<div class="breadcrumb">
+    <a href="/ui/repos">Repositories</a>
+    <span class="breadcrumb-sep">/</span>
+    <a href="/ui/repos/{{ repo_name }}">{{ repo_name }}</a>
+    <span class="breadcrumb-sep">/</span>
+    <a href="/ui/repos/{{ repo_name }}/tree/{{ ref_name }}">{{ ref_name }}</a>
+    {% for crumb in breadcrumbs %}
+    <span class="breadcrumb-sep">/</span>
+    {% if loop.last %}
+    <span>{{ crumb.name }}</span>
+    {% else %}
+    <a href="/ui/repos/{{ repo_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>
+    {% endif %}
+    {% endfor %}
+</div>
+
+<div class="flex items-center justify-between" style="margin-bottom: 32px;">
+    <h1 class="flex items-center gap-3" style="margin-bottom: 0;">
+        <svg class="icon" style="width: 28px; height: 28px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
+        </svg>
+        Editing {{ file_name }}
+    </h1>
+</div>
+
+<form method="POST" action="/ui/repos/{{ repo_name }}/edit/{{ ref_name }}/{{ path }}">
+    <div class="edit-container">
+        <div class="edit-header">
+            <span class="text-secondary text-sm">{{ path }}</span>
+        </div>
+        <textarea name="content" class="edit-textarea" spellcheck="false">{{ content }}</textarea>
+        <div class="commit-section">
+            <input type="text" name="message" class="commit-input" placeholder="Commit message (optional)" />
+            <div class="button-group">
+                <a href="/ui/repos/{{ repo_name }}/blob/{{ ref_name }}/{{ path }}" class="btn btn-secondary">Cancel</a>
+                <button type="submit" class="btn btn-primary">Commit changes</button>
+            </div>
+        </div>
+    </div>
+</form>
+{% endblock %}"##;
+
 const ERROR_TEMPLATE: &str = r##"{% extends "base.html" %}
-{% block title %}Error - Git-Xet{% endblock %}
+{% block title %}Error - OpenXet{% endblock %}
 {% block content %}
 <div class="card">
-    <div class="card-header">Error</div>
-    <div class="card-body">
-        <p>{{ message }}</p>
-        <p style="margin-top: 16px;"><a href="/">Return to home</a></p>
+    <div style="padding: 48px; text-align: center;">
+        <h1 style="margin-bottom: 16px;">Something went wrong</h1>
+        <p class="text-secondary">{{ message }}</p>
+        <a href="/" class="btn btn-secondary mt-6">Return home</a>
     </div>
 </div>
 {% endblock %}"##;

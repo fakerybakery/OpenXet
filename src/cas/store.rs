@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
-use crate::db::entities::{lfs_object, lfs_chunk, cas_chunk};
+use crate::db::entities::{lfs_object, lfs_chunk, cas_chunk, cas_block, file_segment};
 use crate::error::{Result, ServerError};
 use crate::storage::{namespaces, StorageBackend, StorageConfig};
 
@@ -538,23 +538,81 @@ impl CasStore {
             }
         }
 
-        // Load CAS chunks (for deduplication index)
-        let chunks = cas_chunk::Entity::find().all(&**db).await
-            .map_err(|e| ServerError::Internal(format!("Failed to load chunks: {}", e)))?;
+        // Load CAS blocks and their chunk entries
+        let blocks = cas_block::Entity::find().all(&**db).await
+            .map_err(|e| ServerError::Internal(format!("Failed to load blocks: {}", e)))?;
 
-        for chunk in chunks {
-            if let Some(hash) = ContentHash::from_hex(&chunk.hash) {
-                self.chunk_index.insert(hash, chunk.size as u64);
+        for block_row in blocks {
+            if let Some(block_hash) = ContentHash::from_hex(&block_row.hash) {
+                // Load chunk entries for this block
+                let chunk_entries = cas_chunk::Entity::find()
+                    .filter(cas_chunk::Column::BlockHash.eq(&block_row.hash))
+                    .order_by_asc(cas_chunk::Column::OffsetInBlock)
+                    .all(&**db)
+                    .await
+                    .map_err(|e| ServerError::Internal(format!("Failed to load block chunks: {}", e)))?;
+
+                let chunks: Vec<BlockChunkEntry> = chunk_entries
+                    .into_iter()
+                    .filter_map(|c| {
+                        ContentHash::from_hex(&c.hash).map(|hash| BlockChunkEntry {
+                            chunk_hash: hash,
+                            chunk_size: c.size as u32,
+                            byte_offset: c.offset_in_block as u32,
+                        })
+                    })
+                    .collect();
+
+                // Add chunks to deduplication index
+                for entry in &chunks {
+                    self.chunk_index.insert(entry.chunk_hash, entry.chunk_size as u64);
+                }
+
+                let block = Block {
+                    hash: block_hash,
+                    chunks,
+                    total_size: block_row.size as u32,
+                };
+                self.blocks.insert(block_hash, block);
             }
         }
 
-        // Note: Block metadata is stored on disk with the block data
-        // We load the chunk index for deduplication and the LFS objects for status tracking
+        // Load file reconstructions (segments)
+        let segments = file_segment::Entity::find()
+            .order_by_asc(file_segment::Column::FileHash)
+            .order_by_asc(file_segment::Column::SegmentIndex)
+            .all(&**db)
+            .await
+            .map_err(|e| ServerError::Internal(format!("Failed to load file segments: {}", e)))?;
+
+        // Group segments by file hash
+        let mut file_segments: std::collections::HashMap<String, Vec<FileSegment>> = std::collections::HashMap::new();
+        for seg in segments {
+            if let Some(block_hash) = ContentHash::from_hex(&seg.block_hash) {
+                let segment = FileSegment {
+                    block_hash,
+                    byte_start: seg.byte_start as u32,
+                    byte_end: seg.byte_end as u32,
+                    segment_size: seg.segment_size as u32,
+                };
+                file_segments.entry(seg.file_hash).or_default().push(segment);
+            }
+        }
+
+        // Create FileReconstruction objects
+        for (file_hash_hex, segments) in file_segments {
+            if let Some(file_hash) = ContentHash::from_hex(&file_hash_hex) {
+                let reconstruction = FileReconstruction::new(file_hash, segments);
+                self.reconstructions.insert(file_hash, reconstruction);
+            }
+        }
 
         tracing::info!(
-            "Loaded {} LFS objects, {} chunks from database",
+            "Loaded {} LFS objects, {} blocks, {} chunks, {} file reconstructions from database",
             self.lfs_objects.len(),
-            self.chunk_index.len()
+            self.blocks.len(),
+            self.chunk_index.len(),
+            self.reconstructions.len()
         );
         Ok(())
     }
@@ -793,6 +851,53 @@ impl CasStore {
         }
         std::fs::write(&path, &data).ok();
 
+        // Persist block and chunk entries to database
+        if let Some(db) = &self.db {
+            let db = db.clone();
+            let block_hash = hex.clone();
+            let block_size = block.total_size as i64;
+            let chunk_count = block.chunks.len() as i32;
+            let chunk_entries: Vec<_> = block.chunks.iter().map(|e| {
+                (e.chunk_hash.to_hex(), e.chunk_size as i64, e.byte_offset as i64)
+            }).collect();
+
+            tokio::spawn(async move {
+                // Insert block metadata
+                let block_model = cas_block::ActiveModel {
+                    hash: Set(block_hash.clone()),
+                    size: Set(block_size),
+                    chunk_count: Set(chunk_count),
+                    storage_key: Set(block_hash.clone()),
+                };
+                let _ = cas_block::Entity::insert(block_model)
+                    .on_conflict(
+                        sea_orm::sea_query::OnConflict::column(cas_block::Column::Hash)
+                            .do_nothing()
+                            .to_owned()
+                    )
+                    .exec(&*db)
+                    .await;
+
+                // Insert chunk entries
+                for (chunk_hash, chunk_size, offset) in chunk_entries {
+                    let chunk_model = cas_chunk::ActiveModel {
+                        hash: Set(chunk_hash),
+                        size: Set(chunk_size),
+                        block_hash: Set(block_hash.clone()),
+                        offset_in_block: Set(offset),
+                    };
+                    let _ = cas_chunk::Entity::insert(chunk_model)
+                        .on_conflict(
+                            sea_orm::sea_query::OnConflict::column(cas_chunk::Column::Hash)
+                                .do_nothing()
+                                .to_owned()
+                        )
+                        .exec(&*db)
+                        .await;
+                }
+            });
+        }
+
         // Keep metadata in memory
         self.blocks.insert(hash, block);
 
@@ -843,8 +948,35 @@ impl CasStore {
 
     /// Store file reconstruction info
     pub fn store_reconstruction(&self, reconstruction: FileReconstruction) {
-        self.reconstructions
-            .insert(reconstruction.file_hash, reconstruction);
+        let file_hash = reconstruction.file_hash;
+
+        // Persist to database
+        if let Some(db) = &self.db {
+            let db = db.clone();
+            let file_hash_hex = file_hash.to_hex();
+            let segments: Vec<_> = reconstruction.segments.iter().enumerate().map(|(i, s)| {
+                (i as i32, s.block_hash.to_hex(), s.byte_start as i64, s.byte_end as i64, s.segment_size as i64)
+            }).collect();
+
+            tokio::spawn(async move {
+                // Insert all segments
+                for (idx, block_hash, byte_start, byte_end, segment_size) in segments {
+                    let model = file_segment::ActiveModel {
+                        id: Set(Default::default()),
+                        file_hash: Set(file_hash_hex.clone()),
+                        segment_index: Set(idx),
+                        block_hash: Set(block_hash),
+                        byte_start: Set(byte_start),
+                        byte_end: Set(byte_end),
+                        segment_size: Set(segment_size),
+                    };
+                    let _ = file_segment::Entity::insert(model).exec(&*db).await;
+                }
+            });
+        }
+
+        // Keep in memory
+        self.reconstructions.insert(file_hash, reconstruction);
     }
 
     /// Get file reconstruction info
