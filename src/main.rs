@@ -84,6 +84,8 @@ async fn main() {
         .route("/api/cas/stats", get(api::cas_stats))
         // Health check
         .route("/health", get(api::health))
+        // HuggingFace-compatible API (must come before git_router to handle /api/* paths)
+        .merge(api::hf_router())
         // Merge Git/LFS router (uses nested paths to avoid conflicts)
         .merge(api::git_router())
         // Web UI (uses /:owner/:repo patterns)

@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod handlers;
+pub mod hf_api;
 pub mod lfs;
 
 use std::sync::Arc;
@@ -11,6 +12,7 @@ pub use handlers::{
     git_info_refs, git_upload_pack, git_receive_pack,
 };
 pub use lfs::{lfs_batch, lfs_download, lfs_upload, lfs_verify};
+pub use hf_api::router as hf_router;
 
 /// Create Git Smart HTTP and LFS router
 /// Routes are structured to avoid conflicts with web UI:
