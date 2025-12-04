@@ -3,42 +3,33 @@
 {% block title %}New Organization - OpenXet{% endblock %}
 
 {% block content %}
-<div class="breadcrumb">
-    <a href="/">Home</a> / New Organization
-</div>
-
-<div style="max-width: 500px; margin: 40px auto;">
-    <h2 style="margin-bottom: 20px; color: #e0e0e0;">Create a new organization</h2>
+<div style="max-width: 400px; margin: 60px auto;">
+    <h1 style="font-size: 20px; font-weight: 600; text-align: center; margin-bottom: 24px;">Create organization</h1>
 
     {% if error %}
-    <div class="card" style="background: #3d1a1a; border-color: #f85149; margin-bottom: 16px;">
-        <div style="padding: 12px; color: #f85149;">{{ error }}</div>
+    <div class="card mb-3" style="background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.3);">
+        <div class="card-body text-error text-sm">{{ error }}</div>
     </div>
     {% endif %}
 
     <div class="card">
-        <form method="POST" action="/-/new-org" style="padding: 16px;">
-            <div style="margin-bottom: 16px;">
-                <label style="display: block; margin-bottom: 8px; font-size: 13px; color: #e0e0e0;">Organization name</label>
-                <input type="text" name="name" required autofocus
-                    placeholder="my-org"
-                    pattern="[a-zA-Z0-9_-]+"
-                    class="edit-input" style="width: 100%;">
-                <small style="color: #666; font-size: 11px; margin-top: 6px; display: block;">
-                    Only letters, numbers, dashes, and underscores. Must be at least 2 characters.
-                </small>
+        <form method="POST" action="/-/new-org">
+            <div class="card-body">
+                <div>
+                    <label class="text-sm text-secondary mb-1" style="display: block;">Organization name</label>
+                    <input type="text" name="name" required autofocus placeholder="my-org" pattern="[a-zA-Z0-9_-]+" class="input">
+                    <span class="text-xs text-muted mt-1" style="display: block;">Letters, numbers, dashes, underscores. At least 2 characters.</span>
+                </div>
             </div>
-
-            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+            <div class="file-header" style="border-top: 1px solid var(--border); border-bottom: none; justify-content: flex-end; gap: 8px;">
                 <a href="/" class="btn">Cancel</a>
                 <button type="submit" class="btn btn-primary">Create organization</button>
             </div>
         </form>
     </div>
 
-    <p style="margin-top: 16px; font-size: 12px; color: #666;">
-        Organizations allow multiple users to collaborate on repositories.
-        You will be the owner of this organization and can add members.
+    <p class="text-center text-sm text-muted mt-3">
+        Organizations let multiple users collaborate on repositories.
     </p>
 </div>
 {% endblock %}

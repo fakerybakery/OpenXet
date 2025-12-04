@@ -1,11 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Error - OpenXet{% endblock %}
 {% block content %}
-<div class="card">
-    <div class="empty">
-        <p style="font-size: 16px; margin-bottom: 8px;">Error</p>
-        <p class="text-muted">{{ message }}</p>
-        <a href="/" class="btn mt-3">Home</a>
+<div style="max-width: 400px; margin: 80px auto; text-align: center;">
+    <div class="card">
+        <div class="empty">
+            <div style="font-size: 48px; margin-bottom: 16px; opacity: 0.3;">!</div>
+            <p style="font-size: 16px; font-weight: 500; margin-bottom: 8px;">Something went wrong</p>
+            <p class="text-secondary text-sm">{{ message }}</p>
+            <a href="/" class="btn mt-3">Back to home</a>
+        </div>
     </div>
 </div>
 {% endblock %}

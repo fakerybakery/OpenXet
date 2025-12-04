@@ -9,29 +9,26 @@
 {% endblock %}
 
 {% block repo_content %}
-<div style="max-width: 700px;">
-    <h2 style="margin-bottom: 16px; color: #e0e0e0; font-size: 16px;">Start a new discussion</h2>
+<div style="max-width: 640px;">
+    <h2 style="font-size: 16px; font-weight: 600; margin-bottom: 16px;">Start a new discussion</h2>
 
-    <div class="card">
-        <form method="POST" action="/{{ full_name }}/discussions/new" style="padding: 12px;">
-            <div style="margin-bottom: 12px;">
-                <label style="display: block; margin-bottom: 6px; font-size: 12px; color: #999;">Title</label>
-                <input type="text" name="title" required autofocus
-                    placeholder="What would you like to discuss?"
-                    class="edit-input" style="width: 100%;">
+    <form method="POST" action="/{{ full_name }}/discussions/new">
+        <div class="card">
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="text-sm text-secondary mb-1" style="display: block;">Title</label>
+                    <input type="text" name="title" required autofocus placeholder="What would you like to discuss?" class="input">
+                </div>
+                <div>
+                    <label class="text-sm text-secondary mb-1" style="display: block;">Body</label>
+                    <textarea name="content" required placeholder="Provide details..." class="input" style="min-height: 160px;"></textarea>
+                </div>
             </div>
-
-            <div style="margin-bottom: 12px;">
-                <label style="display: block; margin-bottom: 6px; font-size: 12px; color: #999;">Body</label>
-                <textarea name="content" required placeholder="Provide more details..."
-                    class="edit-input" style="width: 100%; min-height: 150px; resize: vertical;"></textarea>
-            </div>
-
-            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+            <div class="file-header" style="border-top: 1px solid var(--border); border-bottom: none; justify-content: flex-end;">
                 <a href="/{{ full_name }}/discussions" class="btn">Cancel</a>
                 <button type="submit" class="btn btn-primary">Start discussion</button>
             </div>
-        </form>
-    </div>
+        </div>
+    </form>
 </div>
 {% endblock repo_content %}

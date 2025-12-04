@@ -9,32 +9,30 @@
 {% endblock %}
 
 {% block repo_content %}
-<div style="margin-bottom: 12px;">
-    <span class="text-muted">{{ discussion_count }} discussion{% if discussion_count != 1 %}s{% endif %}</span>
-</div>
+<div class="text-secondary text-sm mb-3">{{ discussion_count }} discussion{% if discussion_count != 1 %}s{% endif %}</div>
 
 {% if discussions %}
 <div class="card">
     <ul class="list">
         {% for disc in discussions %}
-        <li class="list-item" style="flex-direction: column; align-items: flex-start; gap: 4px; padding: 10px 12px;">
-            <div style="display: flex; align-items: center; gap: 8px; width: 100%;">
+        <li class="list-item" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+            <div class="flex items-center gap-2 w-full">
                 {% if disc.status == "open" %}
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="#5c5" style="flex-shrink: 0;">
+                <svg class="icon text-success" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink: 0;">
                     <path d="M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/>
                     <path d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z"/>
                 </svg>
                 {% else %}
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="#a371f7" style="flex-shrink: 0;">
+                <svg class="icon" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink: 0; color: var(--purple);">
                     <path d="M11.28 6.78a.75.75 0 00-1.06-1.06L7.25 8.69 5.78 7.22a.75.75 0 00-1.06 1.06l2 2a.75.75 0 001.06 0l3.5-3.5z"/>
                     <path d="M16 8A8 8 0 110 8a8 8 0 0116 0zm-1.5 0a6.5 6.5 0 11-13 0 6.5 6.5 0 0113 0z"/>
                 </svg>
                 {% endif %}
-                <a href="/{{ full_name }}/discussions/{{ disc.id }}" style="font-weight: 500; flex: 1;">{{ disc.title }}</a>
-                <span class="badge">{{ disc.comment_count }} {% if disc.comment_count == 1 %}reply{% else %}replies{% endif %}</span>
+                <a href="/{{ full_name }}/discussions/{{ disc.id }}" class="flex-1 font-medium">{{ disc.title }}</a>
+                <span class="badge">{{ disc.comment_count }}</span>
             </div>
-            <div style="font-size: 11px; color: #666; margin-left: 24px;">
-                #{{ disc.id }} opened {{ disc.created_at }} by <span style="color: #999;">{{ disc.author }}</span>
+            <div class="text-xs text-muted" style="margin-left: 26px;">
+                #{{ disc.id }} &middot; {{ disc.author }} &middot; {{ disc.created_at }}
             </div>
         </li>
         {% endfor %}
@@ -43,11 +41,11 @@
 {% else %}
 <div class="card">
     <div class="empty">
-        <p style="margin-bottom: 12px;">No discussions yet</p>
+        <p class="mb-3">No discussions yet</p>
         {% if current_user %}
-        <a href="/{{ full_name }}/discussions/new" class="btn btn-primary">Start the first discussion</a>
+        <a href="/{{ full_name }}/discussions/new" class="btn btn-primary">Start a discussion</a>
         {% else %}
-        <p class="text-muted text-sm">Sign in to start a discussion</p>
+        <p class="text-sm text-secondary">Sign in to start a discussion</p>
         {% endif %}
     </div>
 </div>

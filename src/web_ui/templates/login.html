@@ -1,43 +1,43 @@
 {% extends "base.html" %}
 
-{% block title %}Login - OpenXet{% endblock %}
+{% block title %}Sign in - OpenXet{% endblock %}
 
 {% block content %}
-<div style="max-width: 340px; margin: 60px auto;">
-    <h2 style="margin-bottom: 20px; text-align: center; color: #e0e0e0;">Sign in</h2>
+<div style="max-width: 320px; margin: 80px auto;">
+    <h1 style="font-size: 20px; font-weight: 600; text-align: center; margin-bottom: 24px;">Sign in</h1>
 
     {% if error %}
-    <div style="background: #3d1a1a; border: 1px solid #633; padding: 10px 12px; border-radius: 4px; margin-bottom: 16px; color: #f88; font-size: 12px;">
-        {{ error }}
+    <div class="card mb-3" style="background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.3);">
+        <div class="card-body text-error text-sm">{{ error }}</div>
     </div>
     {% endif %}
 
     {% if message %}
-    <div style="background: #1a3d1a; border: 1px solid #363; padding: 10px 12px; border-radius: 4px; margin-bottom: 16px; color: #8f8; font-size: 12px;">
-        {{ message }}
+    <div class="card mb-3" style="background: rgba(34, 197, 94, 0.1); border-color: rgba(34, 197, 94, 0.3);">
+        <div class="card-body text-success text-sm">{{ message }}</div>
     </div>
     {% endif %}
 
     <div class="card">
-        <form method="POST" action="/-/login" style="padding: 16px;">
-            <div style="margin-bottom: 14px;">
-                <label for="username" style="display: block; margin-bottom: 6px; font-size: 12px; color: #999;">Username</label>
-                <input type="text" id="username" name="username" required autofocus class="edit-input" style="width: 100%;">
+        <form method="POST" action="/-/login">
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="text-sm text-secondary mb-1" style="display: block;">Username</label>
+                    <input type="text" name="username" required autofocus class="input">
+                </div>
+                <div>
+                    <label class="text-sm text-secondary mb-1" style="display: block;">Password</label>
+                    <input type="password" name="password" required class="input">
+                </div>
             </div>
-
-            <div style="margin-bottom: 16px;">
-                <label for="password" style="display: block; margin-bottom: 6px; font-size: 12px; color: #999;">Password</label>
-                <input type="password" id="password" name="password" required class="edit-input" style="width: 100%;">
+            <div class="file-header" style="border-top: 1px solid var(--border); border-bottom: none;">
+                <button type="submit" class="btn btn-primary w-full" style="justify-content: center;">Sign in</button>
             </div>
-
-            <button type="submit" class="btn btn-primary" style="width: 100%; justify-content: center;">
-                Sign in
-            </button>
         </form>
     </div>
 
-    <p style="margin-top: 16px; text-align: center; font-size: 12px; color: #666;">
-        New to OpenXet? <a href="/-/signup">Create an account</a>
+    <p class="text-center text-sm text-secondary mt-3">
+        New here? <a href="/-/signup">Create an account</a>
     </p>
 </div>
 {% endblock %}

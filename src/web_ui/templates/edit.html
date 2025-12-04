@@ -17,37 +17,35 @@
     .CodeMirror {
         height: auto;
         min-height: 400px;
-        font-family: Consolas, Monaco, 'Courier New', monospace;
+        font-family: 'SF Mono', Consolas, Monaco, monospace;
         font-size: 12px;
         border: none;
+        background: var(--bg-surface);
     }
     .CodeMirror-scroll { min-height: 400px; }
-    .edit-input {
-        padding: 6px 8px;
-        background: #1a1a1a;
-        border: 1px solid #333;
-        border-radius: 3px;
-        color: #e0e0e0;
-        font-size: 12px;
-    }
+    .CodeMirror-gutters { background: var(--bg-surface); border-right: 1px solid var(--border); }
 </style>
 
-<h3 style="margin-bottom: 12px;">{% if is_new %}New file{% else %}Editing {{ file_name }}{% endif %}</h3>
+<div class="flex items-center justify-between mb-3">
+    <h3 style="font-size: 16px; font-weight: 500;">{% if is_new %}New file{% else %}Editing {{ file_name }}{% endif %}</h3>
+</div>
 
 <form method="POST" action="/{{ full_name }}/{% if is_new %}new{% else %}edit{% endif %}/{{ ref_name }}{% if path %}/{{ path }}{% endif %}" id="edit-form">
     <div class="card">
         <div class="file-header">
-            <input type="text" name="filename" class="edit-input" style="flex: 1; max-width: 400px;" value="{{ path }}" placeholder="path/to/file.txt" />
+            <input type="text" name="filename" class="input" style="flex: 1; max-width: 400px;" value="{{ path }}" placeholder="path/to/file.txt" />
         </div>
         <textarea name="content" id="editor">{{ content }}</textarea>
-        <div style="padding: 8px 12px; border-top: 1px solid #333; display: flex; gap: 8px; align-items: center;">
-            <input type="text" name="message" class="edit-input" placeholder="Commit message (optional)" style="flex: 1;" />
-            {% if is_new %}
-            <a href="/{{ full_name }}?tab=files&branch={{ ref_name }}" class="btn">Cancel</a>
-            {% else %}
-            <a href="/{{ full_name }}/blob/{{ ref_name }}/{{ path }}" class="btn">Cancel</a>
-            {% endif %}
-            <button type="submit" class="btn btn-primary">Commit</button>
+        <div class="file-header" style="border-top: 1px solid var(--border); border-bottom: none;">
+            <input type="text" name="message" class="input" placeholder="Commit message (optional)" style="flex: 1;" />
+            <div class="flex gap-2">
+                {% if is_new %}
+                <a href="/{{ full_name }}?tab=files&branch={{ ref_name }}" class="btn">Cancel</a>
+                {% else %}
+                <a href="/{{ full_name }}/blob/{{ ref_name }}/{{ path }}" class="btn">Cancel</a>
+                {% endif %}
+                <button type="submit" class="btn btn-primary">Commit</button>
+            </div>
         </div>
     </div>
 </form>

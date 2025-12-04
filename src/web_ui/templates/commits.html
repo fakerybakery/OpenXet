@@ -3,7 +3,7 @@
 
 {% block header_actions %}
 {% if branches %}
-<select name="branch" class="branch-select" onchange="window.location.href='/{{ full_name }}/commits/' + this.value">
+<select name="branch" class="select" onchange="window.location.href='/{{ full_name }}/commits/' + this.value">
     {% for branch in branches %}
     <option value="{{ branch.name }}" {% if branch.name == ref_name %}selected{% endif %}>{{ branch.name }}</option>
     {% endfor %}
@@ -20,92 +20,33 @@ window.location.href = '/{{ full_name }}/commits/' + branch;
     {% if commits %}
     <ul class="list">
         {% for commit in commits %}
-        <li class="list-item commit-item">
-            <div class="commit-main">
-                <div class="commit-message">
+        <li class="list-item justify-between">
+            <div style="flex: 1; min-width: 0;">
+                <div class="truncate">
                     <a href="/{{ full_name }}/commit/{{ commit.id }}">{{ commit.short_message }}</a>
                 </div>
-                <div class="commit-meta text-muted text-sm">
-                    <span>{{ commit.author_name }}</span>
-                    <span> committed {{ commit.author_time_ago }}</span>
+                <div class="text-xs text-muted mt-1">
+                    {{ commit.author_name }} &middot; {{ commit.author_time_ago }}
                 </div>
             </div>
-            <div class="commit-sha">
-                <a href="/{{ full_name }}/commit/{{ commit.id }}" class="sha-link">{{ commit.short_id }}</a>
-            </div>
+            <a href="/{{ full_name }}/commit/{{ commit.id }}" class="font-mono text-sm" style="padding: 2px 8px; background: var(--bg-elevated); border-radius: var(--radius-sm); color: var(--text-secondary);">{{ commit.short_id }}</a>
         </li>
         {% endfor %}
     </ul>
     {% else %}
-    <div class="empty">
-        <p>No commits found</p>
-    </div>
+    <div class="empty">No commits found</div>
     {% endif %}
 </div>
 
 {% if has_prev or has_next %}
-<div class="pagination">
+<div class="flex items-center justify-center gap-3 mt-3">
     {% if has_prev %}
     <a href="/{{ full_name }}/commits/{{ ref_name }}?page={{ page - 1 }}" class="btn">Previous</a>
     {% endif %}
-    <span class="page-info">Page {{ page }}</span>
+    <span class="text-sm text-muted">Page {{ page }}</span>
     {% if has_next %}
     <a href="/{{ full_name }}/commits/{{ ref_name }}?page={{ page + 1 }}" class="btn">Next</a>
     {% endif %}
 </div>
 {% endif %}
-
-<style>
-    .commit-item {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 10px 12px;
-    }
-    .commit-main {
-        flex: 1;
-        min-width: 0;
-    }
-    .commit-message {
-        margin-bottom: 2px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    .commit-message a {
-        color: #e0e0e0;
-    }
-    .commit-message a:hover {
-        color: #7ab3ff;
-    }
-    .commit-meta {
-        font-size: 12px;
-    }
-    .commit-sha {
-        margin-left: 12px;
-        flex-shrink: 0;
-    }
-    .sha-link {
-        font-family: Consolas, Monaco, 'Courier New', monospace;
-        font-size: 12px;
-        padding: 2px 6px;
-        background: #333;
-        border-radius: 3px;
-        color: #7ab3ff;
-    }
-    .sha-link:hover {
-        background: #3a3a3a;
-        text-decoration: none;
-    }
-    .pagination {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 12px;
-        margin-top: 16px;
-    }
-    .page-info {
-        color: #666;
-    }
-</style>
 {% endblock %}

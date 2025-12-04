@@ -1,17 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="breadcrumb">
-    <a href="/">Repositories</a> / <a href="/{{ owner }}">{{ owner }}</a> / <a href="/{{ full_name }}"><strong>{{ repo_name }}</strong></a>
+    <a href="/">Repositories</a> / <a href="/{{ owner }}">{{ owner }}</a> / <strong>{{ repo_name }}</strong>
     {% block breadcrumb_extra %}{% endblock %}
 </div>
 
-<div class="flex items-center justify-between mb-2">
-    <h2 style="margin: 0;">{{ full_name }}</h2>
+<div class="flex items-center justify-between mb-3">
+    <h1 style="font-size: 18px; font-weight: 600;">{{ full_name }}</h1>
     <div class="flex items-center gap-2">
         {% block header_actions %}
         {% if branches %}
         <a href="/{{ full_name }}/new/{{ current_branch | default(value=ref_name) | default(value='main') }}" class="btn">New File</a>
-        <select name="branch" class="branch-select" onchange="handleBranchChange(this.value)">
+        <select name="branch" class="select" onchange="handleBranchChange(this.value)">
             {% for branch in branches %}
             <option value="{{ branch.name }}" {% if branch.name == current_branch or branch.name == ref_name %}selected{% endif %}>{{ branch.name }}</option>
             {% endfor %}

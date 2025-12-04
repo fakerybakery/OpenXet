@@ -5,91 +5,76 @@
     <a href="/">Repositories</a> / <strong>{{ owner }}</strong>
 </div>
 
-<div class="flex items-center justify-between mb-2">
-    <div style="display: flex; align-items: center; gap: 12px;">
-        {% if is_org %}
-        <div style="width: 48px; height: 48px; border-radius: 6px; background: #333; display: flex; align-items: center; justify-content: center;">
-            <svg width="24" height="24" viewBox="0 0 16 16" fill="#999">
-                <path d="M1.5 14.25c0 .138.112.25.25.25H4v-1.25a.75.75 0 01.75-.75h2.5a.75.75 0 01.75.75v1.25h2.25a.25.25 0 00.25-.25V1.75a.25.25 0 00-.25-.25h-8.5a.25.25 0 00-.25.25v12.5zM1.75 16A1.75 1.75 0 010 14.25V1.75C0 .784.784 0 1.75 0h8.5C11.216 0 12 .784 12 1.75v12.5c0 .085-.006.168-.018.25h2.268a.25.25 0 00.25-.25V8.285a.25.25 0 00-.111-.208l-1.055-.703a.75.75 0 11.832-1.248l1.055.703c.487.325.779.871.779 1.456v5.965A1.75 1.75 0 0114.25 16h-3.5a.75.75 0 01-.197-.026c-.099.017-.2.026-.303.026h-3a.75.75 0 01-.75-.75V14h-1v1.25a.75.75 0 01-.75.75h-3zM3 3.75A.75.75 0 013.75 3h.5a.75.75 0 010 1.5h-.5A.75.75 0 013 3.75zM3.75 6a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zM3 9.75A.75.75 0 013.75 9h.5a.75.75 0 010 1.5h-.5A.75.75 0 013 9.75zM7.75 3a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zM7 6.75A.75.75 0 017.75 6h.5a.75.75 0 010 1.5h-.5A.75.75 0 017 6.75zM7.75 9a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5z"/>
-            </svg>
-        </div>
-        {% else %}
-        <div style="width: 48px; height: 48px; border-radius: 50%; background: #333; display: flex; align-items: center; justify-content: center; font-size: 20px; color: #999;">
-            {{ owner | truncate(length=1, end="") | upper }}
-        </div>
-        {% endif %}
-        <div>
-            <h2 style="margin: 0;">{{ owner }}</h2>
-            <span class="text-muted">{% if is_org %}Organization{% else %}User{% endif %}</span>
-        </div>
+<div class="flex items-center gap-3 mb-4">
+    {% if is_org %}
+    <div class="avatar-lg" style="border-radius: 6px;">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1.5 14.25c0 .138.112.25.25.25H4v-1.25a.75.75 0 01.75-.75h2.5a.75.75 0 01.75.75v1.25h2.25a.25.25 0 00.25-.25V1.75a.25.25 0 00-.25-.25h-8.5a.25.25 0 00-.25.25v12.5z"/>
+        </svg>
+    </div>
+    {% else %}
+    <div class="avatar-lg">{{ owner | truncate(length=1, end="") | upper }}</div>
+    {% endif %}
+    <div>
+        <h1 style="font-size: 18px; font-weight: 600; margin: 0;">{{ owner }}</h1>
+        <span class="text-sm text-secondary">{% if is_org %}Organization{% else %}User{% endif %}</span>
     </div>
 </div>
 
 {% if is_org %}
-<!-- Organization page -->
+<!-- Organization -->
 <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px;">
     <div>
-        <div class="card-header" style="margin-bottom: 8px; font-weight: 500;">
-            Repositories ({{ repo_count }})
-        </div>
         <div class="card">
+            <div class="card-header">Repositories ({{ repo_count }})</div>
             {% if repos %}
             <ul class="list">
                 {% for repo in repos %}
                 <li class="list-item">
-                    <svg class="icon" viewBox="0 0 16 16" fill="currentColor" style="color: #666;">
-                        <path d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8zM5 12.25v3.25a.25.25 0 00.4.2l1.45-1.087a.25.25 0 01.3 0L8.6 15.7a.25.25 0 00.4-.2v-3.25a.25.25 0 00-.25-.25h-3.5a.25.25 0 00-.25.25z"/>
+                    <svg class="icon folder-icon" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8z"/>
                     </svg>
                     <a href="/{{ repo }}">{{ repo }}</a>
                 </li>
                 {% endfor %}
             </ul>
             {% else %}
-            <div class="empty">
-                <p>No repositories yet</p>
-            </div>
+            <div class="empty">No repositories</div>
             {% endif %}
         </div>
     </div>
 
     <div>
-        <div class="card-header" style="margin-bottom: 8px; font-weight: 500;">
-            Members ({{ member_count }})
-        </div>
         <div class="card">
+            <div class="card-header">Members ({{ member_count }})</div>
             {% if members %}
             <ul class="list">
                 {% for member in members %}
-                <li class="list-item" style="justify-content: space-between;">
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        <div style="width: 24px; height: 24px; border-radius: 50%; background: #333; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #999;">
-                            {{ member.username | truncate(length=1, end="") | upper }}
-                        </div>
+                <li class="list-item justify-between">
+                    <div class="flex items-center gap-2">
+                        <div class="avatar-sm">{{ member.username | truncate(length=1, end="") | upper }}</div>
                         <a href="/{{ member.username }}">{{ member.username }}</a>
                         {% if member.role == "owner" %}
-                        <span class="badge badge-yellow">owner</span>
+                        <span class="badge badge-warning" style="height: 16px; font-size: 9px;">owner</span>
                         {% endif %}
                     </div>
                     {% if is_org_owner and member.username != current_user %}
                     <form method="POST" action="/{{ owner }}/members/{{ member.username }}/remove" style="margin: 0;">
-                        <button type="submit" class="btn" style="padding: 2px 6px; font-size: 11px;" onclick="return confirm('Remove {{ member.username }} from {{ owner }}?')">Remove</button>
+                        <button type="submit" class="btn btn-sm btn-ghost" onclick="return confirm('Remove {{ member.username }}?')">Remove</button>
                     </form>
                     {% endif %}
                 </li>
                 {% endfor %}
             </ul>
             {% else %}
-            <div class="empty">
-                <p>No members</p>
-            </div>
+            <div class="empty">No members</div>
             {% endif %}
 
             {% if is_org_owner %}
-            <div style="padding: 12px; border-top: 1px solid #333;">
-                <form method="POST" action="/{{ owner }}/members" style="display: flex; gap: 8px;">
-                    <input type="text" name="username" placeholder="Username" required
-                        class="edit-input" style="flex: 1; padding: 4px 8px;">
-                    <button type="submit" class="btn btn-primary" style="padding: 4px 8px;">Add</button>
+            <div style="padding: 10px 14px; border-top: 1px solid var(--border);">
+                <form method="POST" action="/{{ owner }}/members" class="flex gap-2">
+                    <input type="text" name="username" placeholder="Username" required class="input flex-1" style="height: 28px; font-size: 12px;">
+                    <button type="submit" class="btn btn-sm btn-primary">Add</button>
                 </form>
             </div>
             {% endif %}
@@ -98,47 +83,43 @@
 </div>
 
 {% else %}
-<!-- User page -->
+<!-- User -->
 <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px;">
     <div>
-        <div class="card-header" style="margin-bottom: 8px; font-weight: 500;">
-            Repositories ({{ repo_count }})
-        </div>
         <div class="card">
+            <div class="card-header">Repositories ({{ repo_count }})</div>
             {% if repos %}
             <ul class="list">
                 {% for repo in repos %}
                 <li class="list-item">
-                    <svg class="icon" viewBox="0 0 16 16" fill="currentColor" style="color: #666;">
-                        <path d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8zM5 12.25v3.25a.25.25 0 00.4.2l1.45-1.087a.25.25 0 01.3 0L8.6 15.7a.25.25 0 00.4-.2v-3.25a.25.25 0 00-.25-.25h-3.5a.25.25 0 00-.25.25z"/>
+                    <svg class="icon folder-icon" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8z"/>
                     </svg>
                     <a href="/{{ repo }}">{{ repo }}</a>
                 </li>
                 {% endfor %}
             </ul>
             {% else %}
-            <div class="empty">
-                <p>No repositories</p>
-            </div>
+            <div class="empty">No repositories</div>
             {% endif %}
         </div>
     </div>
 
     {% if orgs %}
     <div>
-        <div class="card-header" style="margin-bottom: 8px; font-weight: 500;">
-            Organizations ({{ org_count }})
-        </div>
         <div class="card">
+            <div class="card-header">Organizations ({{ org_count }})</div>
             <ul class="list">
                 {% for org in orgs %}
                 <li class="list-item">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="#666" style="flex-shrink: 0;">
-                        <path d="M1.5 14.25c0 .138.112.25.25.25H4v-1.25a.75.75 0 01.75-.75h2.5a.75.75 0 01.75.75v1.25h2.25a.25.25 0 00.25-.25V1.75a.25.25 0 00-.25-.25h-8.5a.25.25 0 00-.25.25v12.5zM1.75 16A1.75 1.75 0 010 14.25V1.75C0 .784.784 0 1.75 0h8.5C11.216 0 12 .784 12 1.75v12.5c0 .085-.006.168-.018.25h2.268a.25.25 0 00.25-.25V8.285a.25.25 0 00-.111-.208l-1.055-.703a.75.75 0 11.832-1.248l1.055.703c.487.325.779.871.779 1.456v5.965A1.75 1.75 0 0114.25 16h-3.5a.75.75 0 01-.197-.026c-.099.017-.2.026-.303.026h-3a.75.75 0 01-.75-.75V14h-1v1.25a.75.75 0 01-.75.75h-3z"/>
-                    </svg>
+                    <div class="avatar-sm" style="border-radius: 4px;">
+                        <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M1.5 14.25c0 .138.112.25.25.25H4v-1.25a.75.75 0 01.75-.75h2.5a.75.75 0 01.75.75v1.25h2.25a.25.25 0 00.25-.25V1.75a.25.25 0 00-.25-.25h-8.5a.25.25 0 00-.25.25v12.5z"/>
+                        </svg>
+                    </div>
                     <a href="/{{ org.name }}">{{ org.name }}</a>
                     {% if org.role == "owner" %}
-                    <span class="badge badge-yellow">owner</span>
+                    <span class="badge badge-warning" style="height: 16px; font-size: 9px;">owner</span>
                     {% endif %}
                 </li>
                 {% endfor %}

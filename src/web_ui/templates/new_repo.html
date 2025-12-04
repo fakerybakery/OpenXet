@@ -3,44 +3,43 @@
 {% block title %}New Repository - OpenXet{% endblock %}
 
 {% block content %}
-<div style="max-width: 500px; margin: 40px auto;">
-    <h2 style="margin-bottom: 20px; color: #e0e0e0;">Create a new repository</h2>
+<div style="max-width: 400px; margin: 60px auto;">
+    <h1 style="font-size: 20px; font-weight: 600; text-align: center; margin-bottom: 24px;">Create repository</h1>
 
     {% if error %}
-    <div style="background: #3d1a1a; border: 1px solid #633; padding: 10px 12px; border-radius: 4px; margin-bottom: 16px; color: #f88; font-size: 12px;">
-        {{ error }}
+    <div class="card mb-3" style="background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.3);">
+        <div class="card-body text-error text-sm">{{ error }}</div>
     </div>
     {% endif %}
 
     <div class="card">
-        <form method="POST" action="/-/new" style="padding: 16px;">
-            <div style="margin-bottom: 16px;">
-                <label style="display: block; margin-bottom: 8px; font-size: 13px; color: #e0e0e0;">Repository name</label>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="color: #999; font-size: 13px;">{{ current_user }} /</span>
-                    <input type="text" name="name" required autofocus
-                        pattern="[a-zA-Z0-9._-]+"
-                        minlength="2"
-                        placeholder="my-model"
-                        class="edit-input" style="flex: 1;">
+        <form method="POST" action="/-/new">
+            <div class="card-body">
+                <div>
+                    <label class="text-sm text-secondary mb-1" style="display: block;">Repository name</label>
+                    <div class="flex items-center gap-2">
+                        <span class="text-secondary text-sm">{{ current_user }} /</span>
+                        <input type="text" name="name" required autofocus
+                            pattern="[a-zA-Z0-9._-]+"
+                            minlength="2"
+                            placeholder="my-model"
+                            class="input" style="flex: 1;">
+                    </div>
+                    <span class="text-xs text-muted mt-1" style="display: block;">Letters, numbers, dashes, underscores, and dots only</span>
                 </div>
-                <small style="color: #666; font-size: 11px; margin-top: 6px; display: block;">
-                    Letters, numbers, dashes, underscores, and dots only
-                </small>
             </div>
-
-            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+            <div class="file-header" style="border-top: 1px solid var(--border); border-bottom: none; justify-content: flex-end; gap: 8px;">
                 <a href="/" class="btn">Cancel</a>
                 <button type="submit" class="btn btn-primary">Create repository</button>
             </div>
         </form>
     </div>
 
-    <div class="card" style="margin-top: 16px;">
+    <div class="card mt-3">
         <div class="card-header">Quick Start</div>
-        <div style="padding: 12px; font-size: 12px;">
-            <p class="text-muted" style="margin-bottom: 8px;">After creating the repository, push your files:</p>
-            <pre style="background: #1a1a1a; padding: 10px; border-radius: 4px; overflow-x: auto;">cd your-project
+        <div class="card-body">
+            <p class="text-muted text-sm mb-2">After creating the repository, push your files:</p>
+            <pre class="font-mono text-xs" style="background: var(--bg-elevated); padding: 12px; border-radius: var(--radius-sm); overflow-x: auto;">cd your-project
 git init
 git add .
 git commit -m "Initial commit"

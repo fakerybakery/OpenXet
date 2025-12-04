@@ -3,10 +3,10 @@
 
 {% block repo_content %}
 {% if active_tab == "overview" %}
-<div class="card">
+<div class="card mb-3">
     <div class="card-header">Clone</div>
-    <div style="padding: 8px 12px;">
-        <code>git clone http://localhost:8080/{{ full_name }}.git</code>
+    <div class="card-body">
+        <code class="font-mono">git clone http://localhost:8080/{{ full_name }}.git</code>
     </div>
 </div>
 
@@ -20,40 +20,38 @@
 {% if not readme_html and not branches %}
 <div class="card">
     <div class="empty">
-        <p>Empty repository</p>
-        <p class="text-sm mt-2">Push some code to get started</p>
+        <p class="mb-2">Empty repository</p>
+        <p class="text-sm text-secondary">Push some code to get started</p>
     </div>
 </div>
 {% endif %}
 
 {% else %}
-{# Files tab #}
+<!-- Files tab -->
 <div class="card">
     {% if entries %}
     <ul class="list">
         {% for entry in entries %}
         <li class="list-item">
             {% if entry.is_dir %}
-            <svg class="icon icon-folder" viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 2.5a.25.25 0 00-.25.25v10.5c0 .138.112.25.25.25h12.5a.25.25 0 00.25-.25v-8.5a.25.25 0 00-.25-.25H7.5c-.55 0-1.07-.26-1.4-.7l-.9-1.2a.25.25 0 00-.2-.1H1.75z"/></svg>
+            <svg class="icon folder-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 2.5a.25.25 0 00-.25.25v10.5c0 .138.112.25.25.25h12.5a.25.25 0 00.25-.25v-8.5a.25.25 0 00-.25-.25H7.5c-.55 0-1.07-.26-1.4-.7l-.9-1.2a.25.25 0 00-.2-.1H1.75z"/></svg>
             <a href="/{{ full_name }}/tree/{{ current_branch }}/{{ entry.full_path }}">{{ entry.name }}</a>
             {% else %}
-            <svg class="icon icon-file" viewBox="0 0 16 16" fill="currentColor"><path d="M3.75 1.5a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h8.5a.25.25 0 00.25-.25V4.664a.25.25 0 00-.073-.177l-2.914-2.914a.25.25 0 00-.177-.073H3.75z"/></svg>
+            <svg class="icon file-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M3.75 1.5a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h8.5a.25.25 0 00.25-.25V4.664a.25.25 0 00-.073-.177l-2.914-2.914a.25.25 0 00-.177-.073H3.75z"/></svg>
             <a href="/{{ full_name }}/blob/{{ current_branch }}/{{ entry.full_path }}">{{ entry.name }}</a>
             {% if entry.is_lfs %}
-                {% if entry.lfs_status == "chunked" %}<span class="badge badge-green">Xet</span>
-                {% elif entry.lfs_status == "processing" %}<span class="badge badge-yellow">Processing</span>
-                {% elif entry.lfs_status == "raw" %}<span class="badge badge-blue">LFS</span>
+                {% if entry.lfs_status == "chunked" %}<span class="badge badge-success">Xet</span>
+                {% elif entry.lfs_status == "processing" %}<span class="badge badge-warning">Processing</span>
+                {% elif entry.lfs_status == "raw" %}<span class="badge">LFS</span>
                 {% else %}<span class="badge">LFS</span>{% endif %}
             {% endif %}
             {% endif %}
-            {% if entry.lfs_size %}<span class="text-muted text-sm" style="margin-left: auto;">{{ entry.lfs_size }}</span>{% endif %}
+            {% if entry.lfs_size %}<span class="text-secondary text-sm ml-auto">{{ entry.lfs_size }}</span>{% endif %}
         </li>
         {% endfor %}
     </ul>
     {% else %}
-    <div class="empty">
-        <p>Empty repository</p>
-    </div>
+    <div class="empty">Empty repository</div>
     {% endif %}
 </div>
 {% endif %}

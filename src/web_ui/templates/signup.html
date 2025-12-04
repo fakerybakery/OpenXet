@@ -1,50 +1,43 @@
 {% extends "base.html" %}
 
-{% block title %}Sign Up - OpenXet{% endblock %}
+{% block title %}Sign up - OpenXet{% endblock %}
 
 {% block content %}
-<div style="max-width: 340px; margin: 60px auto;">
-    <h2 style="margin-bottom: 20px; text-align: center; color: #e0e0e0;">Create account</h2>
+<div style="max-width: 320px; margin: 80px auto;">
+    <h1 style="font-size: 20px; font-weight: 600; text-align: center; margin-bottom: 24px;">Create account</h1>
 
     {% if error %}
-    <div style="background: #3d1a1a; border: 1px solid #633; padding: 10px 12px; border-radius: 4px; margin-bottom: 16px; color: #f88; font-size: 12px;">
-        {{ error }}
+    <div class="card mb-3" style="background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.3);">
+        <div class="card-body text-error text-sm">{{ error }}</div>
     </div>
     {% endif %}
 
     <div class="card">
-        <form method="POST" action="/-/signup" style="padding: 16px;">
-            <div style="margin-bottom: 14px;">
-                <label for="username" style="display: block; margin-bottom: 6px; font-size: 12px; color: #999;">Username</label>
-                <input type="text" id="username" name="username" required autofocus
-                    pattern="[a-zA-Z0-9_-]+"
-                    minlength="2"
-                    class="edit-input" style="width: 100%;">
-                <small style="color: #666; font-size: 11px;">Letters, numbers, dashes, and underscores only</small>
+        <form method="POST" action="/-/signup">
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="text-sm text-secondary mb-1" style="display: block;">Username</label>
+                    <input type="text" name="username" required autofocus pattern="[a-zA-Z0-9_-]+" minlength="2" class="input">
+                    <span class="text-xs text-muted mt-1" style="display: block;">Letters, numbers, dashes, underscores</span>
+                </div>
+                <div class="mb-3">
+                    <label class="text-sm text-secondary mb-1" style="display: block;">Email <span class="text-muted">(optional)</span></label>
+                    <input type="email" name="email" class="input">
+                </div>
+                <div>
+                    <label class="text-sm text-secondary mb-1" style="display: block;">Password</label>
+                    <input type="password" name="password" required minlength="4" class="input">
+                    <span class="text-xs text-muted mt-1" style="display: block;">At least 4 characters</span>
+                </div>
             </div>
-
-            <div style="margin-bottom: 14px;">
-                <label for="email" style="display: block; margin-bottom: 6px; font-size: 12px; color: #999;">Email (optional)</label>
-                <input type="email" id="email" name="email"
-                    class="edit-input" style="width: 100%;">
+            <div class="file-header" style="border-top: 1px solid var(--border); border-bottom: none;">
+                <button type="submit" class="btn btn-primary w-full" style="justify-content: center;">Create account</button>
             </div>
-
-            <div style="margin-bottom: 16px;">
-                <label for="password" style="display: block; margin-bottom: 6px; font-size: 12px; color: #999;">Password</label>
-                <input type="password" id="password" name="password" required
-                    minlength="4"
-                    class="edit-input" style="width: 100%;">
-                <small style="color: #666; font-size: 11px;">At least 4 characters</small>
-            </div>
-
-            <button type="submit" class="btn btn-primary" style="width: 100%; justify-content: center;">
-                Create account
-            </button>
         </form>
     </div>
 
-    <p style="margin-top: 16px; text-align: center; font-size: 12px; color: #666;">
-        Already have an account? <a href="/-/login">Sign in</a>
+    <p class="text-center text-sm text-secondary mt-3">
+        Have an account? <a href="/-/login">Sign in</a>
     </p>
 </div>
 {% endblock %}

@@ -8,7 +8,7 @@
 
 {% block header_actions %}
 {% if branches %}
-<select name="branch" class="branch-select" onchange="handleBranchChange(this.value)">
+<select name="branch" class="select" onchange="handleBranchChange(this.value)">
     {% for branch in branches %}
     <option value="{{ branch.name }}" {% if branch.name == ref_name %}selected{% endif %}>{{ branch.name }}</option>
     {% endfor %}
@@ -29,21 +29,21 @@ window.location.href = '/{{ full_name }}/blob/' + branch + '/{{ path }}';
     .line-numbers {
         text-align: right;
         padding: 6px 8px 6px 6px;
-        color: #555;
+        color: var(--text-muted);
         user-select: none;
-        font-family: Consolas, Monaco, 'Courier New', monospace;
+        font-family: 'SF Mono', Consolas, Monaco, monospace;
         font-size: 12px;
-        line-height: 1.4;
-        border-right: 1px solid #333;
+        line-height: 1.5;
+        border-right: 1px solid var(--border);
         white-space: pre;
         width: 1%;
         min-width: 32px;
     }
     .code-content {
         padding: 6px 8px;
-        font-family: Consolas, Monaco, 'Courier New', monospace;
+        font-family: 'SF Mono', Consolas, Monaco, monospace;
         font-size: 12px;
-        line-height: 1.4;
+        line-height: 1.5;
     }
     .code-content pre { margin: 0; padding: 0; background: transparent !important; }
     .code-content code { padding: 0 !important; background: transparent !important; display: block; }
@@ -55,13 +55,13 @@ window.location.href = '/{{ full_name }}/blob/' + branch + '/{{ path }}';
         <div class="flex items-center gap-2">
             <span>{{ file_name }}</span>
             {% if is_lfs %}
-                {% if lfs_status == "chunked" %}<span class="badge badge-green">Xet</span>
-                {% elif lfs_status == "processing" %}<span class="badge badge-yellow">Processing</span>
-                {% elif lfs_status == "raw" %}<span class="badge badge-blue">LFS</span>
+                {% if lfs_status == "chunked" %}<span class="badge badge-success">Xet</span>
+                {% elif lfs_status == "processing" %}<span class="badge badge-warning">Processing</span>
+                {% elif lfs_status == "raw" %}<span class="badge">LFS</span>
                 {% else %}<span class="badge">LFS</span>{% endif %}
             {% endif %}
-            <span class="text-muted">{{ size_display }}</span>
-            {% if not is_lfs and not is_binary %}<span class="text-muted">{{ line_count }}L</span>{% endif %}
+            <span class="text-muted text-sm">{{ size_display }}</span>
+            {% if not is_lfs and not is_binary %}<span class="text-muted text-sm">{{ line_count }}L</span>{% endif %}
         </div>
         <div class="flex gap-2">
             {% if not is_lfs and not is_binary %}
@@ -73,7 +73,7 @@ window.location.href = '/{{ full_name }}/blob/' + branch + '/{{ path }}';
         </div>
     </div>
     {% if is_binary %}
-    <div class="empty">Binary file not shown</div>
+    <div class="empty" style="padding: 24px;">Binary file not shown</div>
     {% else %}
     <div class="code-view">
         <table class="code-table"><tr>
