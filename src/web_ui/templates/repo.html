@@ -1,29 +1,7 @@
-{% extends "base.html" %}
+{% extends "repo_base.html" %}
 {% block title %}{{ repo_name }} - OpenXet{% endblock %}
-{% block content %}
-<div class="breadcrumb">
-    <a href="/">Repositories</a> / <strong>{{ full_name }}</strong>
-</div>
 
-<div class="flex items-center justify-between mb-2">
-    <h2 style="margin: 0;">{{ full_name }}</h2>
-    <div class="flex items-center gap-2">
-        {% if branches %}
-        <a href="/{{ full_name }}/new/{{ current_branch }}" class="btn">New File</a>
-        <select name="branch" class="branch-select" onchange="window.location.href='/{{ full_name }}?tab={{ active_tab }}&branch=' + this.value">
-            {% for branch in branches %}
-            <option value="{{ branch.name }}" {% if branch.name == current_branch %}selected{% endif %}>{{ branch.name }}</option>
-            {% endfor %}
-        </select>
-        {% endif %}
-    </div>
-</div>
-
-<div class="tabs">
-    <a href="/{{ full_name }}?tab=overview&branch={{ current_branch }}" class="tab {% if active_tab == 'overview' %}active{% endif %}">Overview</a>
-    <a href="/{{ full_name }}?tab=files&branch={{ current_branch }}" class="tab {% if active_tab == 'files' %}active{% endif %}">Files</a>
-</div>
-
+{% block repo_content %}
 {% if active_tab == "overview" %}
 <div class="card">
     <div class="card-header">Clone</div>

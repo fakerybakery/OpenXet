@@ -101,14 +101,15 @@ fn extract_auth(headers: &HeaderMap, auth: &AuthManager) -> Option<Token> {
     None
 }
 
-/// POST /:repo/info/lfs/objects/batch - LFS Batch API
+/// POST /:owner/:repo/info/lfs/objects/batch - LFS Batch API
 pub async fn lfs_batch(
     State(state): State<Arc<AppState>>,
-    Path(repo): Path<String>,
+    Path((owner, repo)): Path<(String, String)>,
     headers: HeaderMap,
     Json(request): Json<BatchRequest>,
 ) -> Response {
-    let repo_name = repo.trim_end_matches(".git");
+    let repo_name_raw = repo.trim_end_matches(".git");
+    let repo_name = format!("{}/{}", owner, repo_name_raw);
     let token = extract_auth(&headers, &state.auth);
 
     tracing::debug!(
@@ -120,7 +121,7 @@ pub async fn lfs_batch(
 
     // Check permissions
     let needs_write = request.operation == "upload";
-    if let Err(e) = state.auth.check_permission(token.as_ref(), repo_name, needs_write) {
+    if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, needs_write) {
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")
@@ -154,8 +155,8 @@ pub async fn lfs_batch(
 
     for obj in request.objects {
         let response = match request.operation.as_str() {
-            "download" => process_download_object(&state, &obj, host, scheme, repo_name, &auth_header),
-            "upload" => process_upload_object(&state, &obj, host, scheme, repo_name, &auth_header),
+            "download" => process_download_object(&state, &obj, host, scheme, &repo_name, &auth_header),
+            "upload" => process_upload_object(&state, &obj, host, scheme, &repo_name, &auth_header),
             _ => ObjectResponse {
                 oid: obj.oid.clone(),
                 size: obj.size,
@@ -279,18 +280,19 @@ fn process_upload_object(
     }
 }
 
-/// PUT /:repo/info/lfs/objects/:oid - Upload LFS object (streaming)
+/// PUT /:owner/:repo/info/lfs/objects/:oid - Upload LFS object (streaming)
 ///
 /// This handler streams the upload directly to disk without loading
 /// the entire file into memory. Hash verification happens during streaming.
 /// After the raw file is written, it's queued for background chunking/dedup.
 pub async fn lfs_upload(
     State(state): State<Arc<AppState>>,
-    Path((repo, oid)): Path<(String, String)>,
+    Path((owner, repo, oid)): Path<(String, String, String)>,
     headers: HeaderMap,
     request: axum::extract::Request,
 ) -> Response {
-    let repo_name = repo.trim_end_matches(".git");
+    let repo_name_raw = repo.trim_end_matches(".git");
+    let repo_name = format!("{}/{}", owner, repo_name_raw);
     let token = extract_auth(&headers, &state.auth);
 
     // Get content-length if available (for logging)
@@ -306,7 +308,7 @@ pub async fn lfs_upload(
     );
 
     // Check write permission
-    if let Err(e) = state.auth.check_permission(token.as_ref(), repo_name, true) {
+    if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, true) {
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")
@@ -454,22 +456,23 @@ async fn stream_to_file_with_hash(
     Ok((ContentHash::from_raw(hash_bytes), total_written))
 }
 
-/// GET /:repo/info/lfs/objects/:oid - Download LFS object (streaming)
+/// GET /:owner/:repo/info/lfs/objects/:oid - Download LFS object (streaming)
 ///
 /// Streams the object from disk without loading it entirely into memory.
 /// Works with both raw (not yet chunked) and chunked objects.
 pub async fn lfs_download(
     State(state): State<Arc<AppState>>,
-    Path((repo, oid)): Path<(String, String)>,
+    Path((owner, repo, oid)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let repo_name = repo.trim_end_matches(".git");
+    let repo_name_raw = repo.trim_end_matches(".git");
+    let repo_name = format!("{}/{}", owner, repo_name_raw);
     let token = extract_auth(&headers, &state.auth);
 
     tracing::debug!("LFS download (streaming): repo={} oid={}", repo_name, oid);
 
     // Check read permission
-    if let Err(e) = state.auth.check_permission(token.as_ref(), repo_name, false) {
+    if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false) {
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")
@@ -574,20 +577,21 @@ async fn stream_file_response(
         .unwrap())
 }
 
-/// POST /:repo/info/lfs/verify - Verify uploaded object
+/// POST /:owner/:repo/info/lfs/verify - Verify uploaded object
 pub async fn lfs_verify(
     State(state): State<Arc<AppState>>,
-    Path(repo): Path<String>,
+    Path((owner, repo)): Path<(String, String)>,
     headers: HeaderMap,
     Json(obj): Json<LfsObject>,
 ) -> Response {
-    let repo_name = repo.trim_end_matches(".git");
+    let repo_name_raw = repo.trim_end_matches(".git");
+    let repo_name = format!("{}/{}", owner, repo_name_raw);
     let token = extract_auth(&headers, &state.auth);
 
     tracing::debug!("LFS verify: repo={} oid={} size={}", repo_name, obj.oid, obj.size);
 
     // Check permission
-    if let Err(e) = state.auth.check_permission(token.as_ref(), repo_name, false) {
+    if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false) {
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")

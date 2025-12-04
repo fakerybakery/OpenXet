@@ -1,0 +1,247 @@
+{% extends "repo_base.html" %}
+{% block title %}{{ commit.short_id }} - {{ full_name }} - OpenXet{% endblock %}
+
+{% block breadcrumb_extra %}
+ / <strong>Commit {{ commit.short_id }}</strong>
+{% endblock %}
+
+{% block header_actions %}
+{# No actions for commit view #}
+{% endblock %}
+
+{% block repo_content %}
+<div class="card">
+    <div class="commit-header">
+        <div class="commit-title">{{ commit.short_message }}</div>
+        {% if commit.message != commit.short_message %}
+        <div class="commit-body">{{ commit.message }}</div>
+        {% endif %}
+    </div>
+    <div class="commit-info">
+        <div class="commit-author">
+            <strong>{{ commit.author_name }}</strong>
+            <span class="text-muted">&lt;{{ commit.author_email }}&gt;</span>
+            <span class="text-muted">committed {{ commit.author_time_ago }}</span>
+        </div>
+        <div class="commit-sha-full">
+            <span class="text-muted">Commit:</span>
+            <code>{{ commit.id }}</code>
+        </div>
+        {% if commit.parent_ids %}
+        <div class="commit-parents">
+            <span class="text-muted">Parent{% if commit.parent_ids | length > 1 %}s{% endif %}:</span>
+            {% for parent in commit.parent_ids %}
+            <a href="/{{ full_name }}/commit/{{ parent }}" class="sha-link">{{ parent | truncate(length=7, end="") }}</a>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="diff-stats mb-2">
+    <span class="text-muted">Showing</span>
+    <strong>{{ files_changed }}</strong> <span class="text-muted">changed file{% if files_changed != 1 %}s{% endif %} with</span>
+    <strong class="additions">{{ total_additions }}</strong> <span class="text-muted">addition{% if total_additions != 1 %}s{% endif %} and</span>
+    <strong class="deletions">{{ total_deletions }}</strong> <span class="text-muted">deletion{% if total_deletions != 1 %}s{% endif %}</span>
+</div>
+
+{% for file in file_changes %}
+<div class="card file-diff">
+    <div class="file-header">
+        <div class="file-path">
+            {% if file.status == "added" %}
+            <span class="file-status status-added">A</span>
+            {% elif file.status == "deleted" %}
+            <span class="file-status status-deleted">D</span>
+            {% else %}
+            <span class="file-status status-modified">M</span>
+            {% endif %}
+            <span>{{ file.path }}</span>
+        </div>
+        <div class="file-stats">
+            {% if file.additions > 0 %}<span class="additions">+{{ file.additions }}</span>{% endif %}
+            {% if file.deletions > 0 %}<span class="deletions">-{{ file.deletions }}</span>{% endif %}
+        </div>
+    </div>
+    {% if file.is_binary %}
+    <div class="binary-notice">Binary file not shown</div>
+    {% else %}
+    <div class="diff-content">
+        <table class="diff-table">
+            {% for line in file.diff_lines %}
+            <tr class="diff-line diff-{{ line.line_type }}">
+                <td class="line-num line-old">{% if line.old_line %}{{ line.old_line }}{% endif %}</td>
+                <td class="line-num line-new">{% if line.new_line %}{{ line.new_line }}{% endif %}</td>
+                <td class="line-indicator">
+                    {% if line.line_type == "add" %}+{% elif line.line_type == "del" %}-{% else %} {% endif %}
+                </td>
+                <td class="line-content"><pre>{{ line.content }}</pre></td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    {% endif %}
+</div>
+{% endfor %}
+
+<style>
+    .commit-header {
+        padding: 16px;
+        border-bottom: 1px solid #333;
+    }
+    .commit-title {
+        font-size: 18px;
+        font-weight: 600;
+        margin-bottom: 8px;
+    }
+    .commit-body {
+        white-space: pre-wrap;
+        font-family: inherit;
+        color: #999;
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid #333;
+    }
+    .commit-info {
+        padding: 12px 16px;
+        font-size: 13px;
+    }
+    .commit-info > div {
+        margin-bottom: 4px;
+    }
+    .commit-sha-full code {
+        font-size: 12px;
+    }
+    .sha-link {
+        font-family: Consolas, Monaco, 'Courier New', monospace;
+        font-size: 12px;
+        padding: 2px 6px;
+        background: #333;
+        border-radius: 3px;
+        color: #7ab3ff;
+        margin-left: 4px;
+    }
+    .sha-link:hover {
+        background: #3a3a3a;
+        text-decoration: none;
+    }
+    .diff-stats {
+        font-size: 13px;
+    }
+    .additions {
+        color: #3fb950;
+    }
+    .deletions {
+        color: #f85149;
+    }
+    .file-diff {
+        margin-bottom: 12px;
+    }
+    .file-path {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-family: Consolas, Monaco, 'Courier New', monospace;
+        font-size: 13px;
+    }
+    .file-status {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        font-size: 11px;
+        font-weight: 600;
+        border-radius: 3px;
+    }
+    .status-added {
+        background: #1a3d1a;
+        color: #3fb950;
+    }
+    .status-deleted {
+        background: #3d1a1a;
+        color: #f85149;
+    }
+    .status-modified {
+        background: #3d3d1a;
+        color: #d29922;
+    }
+    .file-stats {
+        font-family: Consolas, Monaco, 'Courier New', monospace;
+        font-size: 12px;
+    }
+    .file-stats .additions {
+        margin-right: 8px;
+    }
+    .binary-notice {
+        padding: 16px;
+        text-align: center;
+        color: #666;
+        font-style: italic;
+    }
+    .diff-content {
+        overflow-x: auto;
+    }
+    .diff-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: Consolas, Monaco, 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.4;
+    }
+    .diff-line {
+        border: none;
+    }
+    .diff-add {
+        background: rgba(63, 185, 80, 0.15);
+    }
+    .diff-del {
+        background: rgba(248, 81, 73, 0.15);
+    }
+    .diff-context {
+        background: transparent;
+    }
+    .diff-header {
+        background: #282828;
+        color: #666;
+    }
+    .line-num {
+        width: 40px;
+        min-width: 40px;
+        padding: 0 8px;
+        text-align: right;
+        color: #484848;
+        user-select: none;
+        border-right: 1px solid #333;
+        vertical-align: top;
+    }
+    .line-indicator {
+        width: 20px;
+        padding: 0 4px;
+        text-align: center;
+        color: #666;
+        user-select: none;
+        vertical-align: top;
+    }
+    .diff-add .line-indicator {
+        color: #3fb950;
+    }
+    .diff-del .line-indicator {
+        color: #f85149;
+    }
+    .line-content {
+        padding: 0 8px;
+        white-space: pre;
+        vertical-align: top;
+    }
+    .line-content pre {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        font-size: inherit;
+        line-height: inherit;
+        white-space: pre;
+        overflow: visible;
+    }
+</style>
+{% endblock %}

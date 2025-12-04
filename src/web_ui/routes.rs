@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tera::Context;
 
 use crate::api::AppState;
-use crate::git::{ObjectId, ObjectType, Repository, TreeEntry};
+use crate::git::{CommitInfo, ObjectId, ObjectType, Repository, TreeEntry};
 use super::templates;
 
 /// Create the web UI router with GitHub-like routes
@@ -21,6 +21,8 @@ pub fn create_router() -> Router<Arc<AppState>> {
         .route("/", get(index))
         // Stats page
         .route("/-/stats", get(stats))
+        // User profile page (must come before /:owner/:repo)
+        .route("/:owner", get(user_profile))
         // Repository routes (owner/repo format)
         .route("/:owner/:repo", get(repo_detail))
         .route("/:owner/:repo/tree/:ref", get(tree_root))
@@ -29,6 +31,9 @@ pub fn create_router() -> Router<Arc<AppState>> {
         .route("/:owner/:repo/edit/:ref/*path", get(edit_file).post(commit_file))
         .route("/:owner/:repo/new/:ref", get(new_file).post(commit_new_file))
         .route("/:owner/:repo/new/:ref/*path", get(new_file_in_dir).post(commit_new_file_in_dir))
+        // Commit history and viewing
+        .route("/:owner/:repo/commits/:ref", get(commits_list))
+        .route("/:owner/:repo/commit/:sha", get(commit_view))
 }
 
 /// Home page
@@ -44,6 +49,31 @@ async fn index(State(state): State<Arc<AppState>>) -> Response {
     context.insert("chunk_count", &stats.chunk_count);
 
     render_template("index.html", &context)
+}
+
+/// User profile page - shows all repos owned by user
+async fn user_profile(
+    State(state): State<Arc<AppState>>,
+    Path(owner): Path<String>,
+) -> Response {
+    // Get all repos and filter by owner
+    let all_repos = state.repos.list_repos();
+    let user_repos: Vec<&String> = all_repos
+        .iter()
+        .filter(|r| r.starts_with(&format!("{}/", owner)))
+        .collect();
+
+    // If no repos found for this owner, show 404
+    if user_repos.is_empty() {
+        return render_error(&format!("User '{}' not found", owner));
+    }
+
+    let mut context = Context::new();
+    context.insert("owner", &owner);
+    context.insert("repos", &user_repos);
+    context.insert("repo_count", &user_repos.len());
+
+    render_template("user.html", &context)
 }
 
 /// Query params for repo page
@@ -426,6 +456,7 @@ async fn tree_view_impl(
         })
         .collect();
     context.insert("entries", &entry_infos);
+    context.insert("active_tab", "files");
 
     render_template("tree.html", &context)
 }
@@ -516,6 +547,18 @@ async fn blob_view(
     context.insert("lfs_size", &lfs_size);
     context.insert("lfs_oid", &lfs_oid);
     context.insert("size_display", &actual_size_display);
+    context.insert("active_tab", "files");
+
+    // Get branches for the header
+    let git_refs = repo_handle.list_refs();
+    let branches: Vec<BranchInfo> = git_refs
+        .iter()
+        .filter(|r| r.name.starts_with("refs/heads/"))
+        .map(|r| BranchInfo {
+            name: r.name.strip_prefix("refs/heads/").unwrap_or(&r.name).to_string(),
+        })
+        .collect();
+    context.insert("branches", &branches);
 
     // Check if binary (don't show content for LFS pointers either - they're just metadata)
     let is_binary = is_lfs || content.iter().take(8000).any(|&b| b == 0);
@@ -671,6 +714,7 @@ async fn edit_file(
     let text = String::from_utf8_lossy(&content).to_string();
     context.insert("content", &text);
     context.insert("is_new", &false);
+    context.insert("active_tab", "files");
 
     render_template("edit.html", &context)
 }
@@ -713,6 +757,7 @@ fn render_new_file_form(owner: &str, repo: &str, ref_name: &str, dir_path: &str)
     // Empty breadcrumbs for new file
     let breadcrumbs: Vec<Breadcrumb> = Vec::new();
     context.insert("breadcrumbs", &breadcrumbs);
+    context.insert("active_tab", "files");
 
     render_template("edit.html", &context)
 }
@@ -1150,4 +1195,589 @@ fn serialize_tree(entries: &[TreeEntry]) -> Vec<u8> {
     }
 
     data
+}
+
+// ============================================================================
+// Commit History Handlers
+// ============================================================================
+
+/// Query params for commits list
+#[derive(serde::Deserialize, Default)]
+struct CommitsQuery {
+    page: Option<usize>,
+}
+
+/// Commit info for templates
+#[derive(serde::Serialize)]
+struct CommitInfoView {
+    id: String,
+    short_id: String,
+    message: String,
+    short_message: String,
+    author_name: String,
+    author_email: String,
+    author_time: i64,
+    author_time_ago: String,
+    parent_ids: Vec<String>,
+}
+
+impl From<&CommitInfo> for CommitInfoView {
+    fn from(c: &CommitInfo) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        Self {
+            id: c.id.to_hex(),
+            short_id: c.id.to_hex()[..7].to_string(),
+            message: c.message.clone(),
+            short_message: c.short_message.clone(),
+            author_name: c.author_name.clone(),
+            author_email: c.author_email.clone(),
+            author_time: c.author_time,
+            author_time_ago: format_time_ago(now - c.author_time),
+            parent_ids: c.parent_ids.iter().map(|p| p.to_hex()).collect(),
+        }
+    }
+}
+
+/// Format seconds ago as human-readable string
+fn format_time_ago(seconds: i64) -> String {
+    if seconds < 0 {
+        return "in the future".to_string();
+    }
+    if seconds < 60 {
+        return format!("{} seconds ago", seconds);
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{} minute{} ago", minutes, if minutes == 1 { "" } else { "s" });
+    }
+    let hours = minutes / 60;
+    if hours < 24 {
+        return format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" });
+    }
+    let days = hours / 24;
+    if days < 30 {
+        return format!("{} day{} ago", days, if days == 1 { "" } else { "s" });
+    }
+    let months = days / 30;
+    if months < 12 {
+        return format!("{} month{} ago", months, if months == 1 { "" } else { "s" });
+    }
+    let years = months / 12;
+    format!("{} year{} ago", years, if years == 1 { "" } else { "s" })
+}
+
+/// List commits for a branch
+async fn commits_list(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo, ref_name)): Path<(String, String, String)>,
+    Query(query): Query<CommitsQuery>,
+) -> Response {
+    let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
+
+    let repo_handle = match state.repos.get_repo(&full_name) {
+        Ok(r) => r,
+        Err(_) => return render_error(&format!("Repository '{}' not found", full_name)),
+    };
+
+    // Resolve ref to commit
+    let commit_id = match repo_handle.resolve_ref(&format!("refs/heads/{}", ref_name)) {
+        Some(id) => id,
+        None => return render_error(&format!("Branch '{}' not found", ref_name)),
+    };
+
+    // Pagination: 30 commits per page
+    let per_page = 30;
+    let page = query.page.unwrap_or(1).max(1);
+    let skip = (page - 1) * per_page;
+
+    // Walk commits - get one extra to check if there's a next page
+    let commits = repo_handle.walk_commits(&commit_id, per_page + 1, skip);
+    let has_next = commits.len() > per_page;
+    let commits: Vec<CommitInfoView> = commits.iter().take(per_page).map(|c| c.into()).collect();
+
+    let mut context = Context::new();
+    context.insert("owner", &owner);
+    context.insert("repo_name", repo_name);
+    context.insert("full_name", &full_name);
+    context.insert("ref_name", &ref_name);
+    context.insert("commits", &commits);
+    context.insert("page", &page);
+    context.insert("has_next", &has_next);
+    context.insert("has_prev", &(page > 1));
+
+    // Get branches for dropdown
+    let git_refs = repo_handle.list_refs();
+    let branches: Vec<BranchInfo> = git_refs
+        .iter()
+        .filter(|r| r.name.starts_with("refs/heads/"))
+        .map(|r| BranchInfo {
+            name: r.name.strip_prefix("refs/heads/").unwrap_or(&r.name).to_string(),
+        })
+        .collect();
+    context.insert("branches", &branches);
+    context.insert("active_tab", "commits");
+
+    render_template("commits.html", &context)
+}
+
+/// File change info for commit view
+#[derive(serde::Serialize)]
+struct FileChange {
+    path: String,
+    status: String, // "added", "modified", "deleted"
+    additions: usize,
+    deletions: usize,
+    diff_lines: Vec<DiffLine>,
+    is_binary: bool,
+}
+
+/// A single line in a diff
+#[derive(serde::Serialize)]
+struct DiffLine {
+    line_type: String, // "add", "del", "context", "header"
+    content: String,
+    old_line: Option<usize>,
+    new_line: Option<usize>,
+}
+
+/// View a single commit with diff
+async fn commit_view(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo, sha)): Path<(String, String, String)>,
+) -> Response {
+    let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
+
+    let repo_handle = match state.repos.get_repo(&full_name) {
+        Ok(r) => r,
+        Err(_) => return render_error(&format!("Repository '{}' not found", full_name)),
+    };
+
+    // Parse commit SHA
+    let commit_id = match ObjectId::from_hex(&sha) {
+        Some(id) => id,
+        None => return render_error(&format!("Invalid commit SHA: {}", sha)),
+    };
+
+    // Get commit info
+    let commit_info = match repo_handle.get_commit_info(&commit_id) {
+        Some(info) => info,
+        None => return render_error(&format!("Commit '{}' not found", sha)),
+    };
+
+    // Get the parent tree (if any) for diff
+    let parent_tree = if !commit_info.parent_ids.is_empty() {
+        repo_handle.get_commit_tree(&commit_info.parent_ids[0])
+    } else {
+        None
+    };
+
+    // Compute diff between parent and this commit's tree
+    let file_changes = compute_diff(&repo_handle, parent_tree.as_ref(), &commit_info.tree_id);
+
+    let commit_view: CommitInfoView = (&commit_info).into();
+
+    // Get branches for navigation
+    let git_refs = repo_handle.list_refs();
+    let branches: Vec<BranchInfo> = git_refs
+        .iter()
+        .filter(|r| r.name.starts_with("refs/heads/"))
+        .map(|r| BranchInfo {
+            name: r.name.strip_prefix("refs/heads/").unwrap_or(&r.name).to_string(),
+        })
+        .collect();
+
+    // Use first branch as default ref_name for navigation
+    let default_branch = branches.first().map(|b| b.name.clone()).unwrap_or_else(|| "main".to_string());
+
+    let mut context = Context::new();
+    context.insert("owner", &owner);
+    context.insert("repo_name", repo_name);
+    context.insert("full_name", &full_name);
+    context.insert("commit", &commit_view);
+    context.insert("file_changes", &file_changes);
+    context.insert("total_additions", &file_changes.iter().map(|f| f.additions).sum::<usize>());
+    context.insert("total_deletions", &file_changes.iter().map(|f| f.deletions).sum::<usize>());
+    context.insert("files_changed", &file_changes.len());
+    context.insert("branches", &branches);
+    context.insert("ref_name", &default_branch);
+    context.insert("active_tab", "commits");
+
+    render_template("commit.html", &context)
+}
+
+/// Compute diff between two trees
+fn compute_diff(
+    repo: &Repository,
+    old_tree: Option<&ObjectId>,
+    new_tree: &ObjectId,
+) -> Vec<FileChange> {
+    let mut changes = Vec::new();
+
+    // Collect entries from both trees
+    let old_entries = old_tree
+        .and_then(|t| repo.parse_tree(t))
+        .unwrap_or_default();
+    let new_entries = repo.parse_tree(new_tree).unwrap_or_default();
+
+    // Build maps for lookup
+    let old_map: std::collections::HashMap<&str, &TreeEntry> =
+        old_entries.iter().map(|e| (e.name.as_str(), e)).collect();
+    let new_map: std::collections::HashMap<&str, &TreeEntry> =
+        new_entries.iter().map(|e| (e.name.as_str(), e)).collect();
+
+    // Find added and modified files
+    for new_entry in &new_entries {
+        if new_entry.is_dir {
+            // Recursively diff directories
+            let old_subdir = old_map.get(new_entry.name.as_str())
+                .filter(|e| e.is_dir)
+                .map(|e| e.oid);
+            let sub_changes = compute_diff_recursive(
+                repo,
+                old_subdir.as_ref(),
+                &new_entry.oid,
+                &new_entry.name,
+            );
+            changes.extend(sub_changes);
+        } else {
+            match old_map.get(new_entry.name.as_str()) {
+                Some(old_entry) if old_entry.oid == new_entry.oid => {
+                    // Unchanged
+                }
+                Some(old_entry) => {
+                    // Modified
+                    let diff = compute_file_diff(repo, &old_entry.oid, &new_entry.oid, &new_entry.name);
+                    changes.push(diff);
+                }
+                None => {
+                    // Added
+                    let diff = compute_file_diff(repo, &ObjectId::from_raw([0; 20]), &new_entry.oid, &new_entry.name);
+                    changes.push(diff);
+                }
+            }
+        }
+    }
+
+    // Find deleted files
+    for old_entry in &old_entries {
+        if !new_map.contains_key(old_entry.name.as_str()) {
+            if old_entry.is_dir {
+                // Recursively mark deleted
+                let sub_changes = compute_diff_recursive(
+                    repo,
+                    Some(&old_entry.oid),
+                    &ObjectId::from_raw([0; 20]),
+                    &old_entry.name,
+                );
+                changes.extend(sub_changes);
+            } else {
+                let diff = compute_file_diff(repo, &old_entry.oid, &ObjectId::from_raw([0; 20]), &old_entry.name);
+                changes.push(diff);
+            }
+        }
+    }
+
+    changes
+}
+
+/// Recursively compute diff for subdirectories
+fn compute_diff_recursive(
+    repo: &Repository,
+    old_tree: Option<&ObjectId>,
+    new_tree: &ObjectId,
+    prefix: &str,
+) -> Vec<FileChange> {
+    let mut changes = Vec::new();
+
+    let is_empty_tree = new_tree.as_bytes() == &[0; 20];
+
+    let old_entries = old_tree
+        .and_then(|t| repo.parse_tree(t))
+        .unwrap_or_default();
+    let new_entries = if is_empty_tree {
+        vec![]
+    } else {
+        repo.parse_tree(new_tree).unwrap_or_default()
+    };
+
+    let old_map: std::collections::HashMap<&str, &TreeEntry> =
+        old_entries.iter().map(|e| (e.name.as_str(), e)).collect();
+    let new_map: std::collections::HashMap<&str, &TreeEntry> =
+        new_entries.iter().map(|e| (e.name.as_str(), e)).collect();
+
+    for new_entry in &new_entries {
+        let full_path = format!("{}/{}", prefix, new_entry.name);
+        if new_entry.is_dir {
+            let old_subdir = old_map.get(new_entry.name.as_str())
+                .filter(|e| e.is_dir)
+                .map(|e| e.oid);
+            let sub_changes = compute_diff_recursive(repo, old_subdir.as_ref(), &new_entry.oid, &full_path);
+            changes.extend(sub_changes);
+        } else {
+            match old_map.get(new_entry.name.as_str()) {
+                Some(old_entry) if old_entry.oid == new_entry.oid => {}
+                Some(old_entry) => {
+                    let diff = compute_file_diff(repo, &old_entry.oid, &new_entry.oid, &full_path);
+                    changes.push(diff);
+                }
+                None => {
+                    let diff = compute_file_diff(repo, &ObjectId::from_raw([0; 20]), &new_entry.oid, &full_path);
+                    changes.push(diff);
+                }
+            }
+        }
+    }
+
+    for old_entry in &old_entries {
+        if !new_map.contains_key(old_entry.name.as_str()) {
+            let full_path = format!("{}/{}", prefix, old_entry.name);
+            if old_entry.is_dir {
+                let sub_changes = compute_diff_recursive(repo, Some(&old_entry.oid), &ObjectId::from_raw([0; 20]), &full_path);
+                changes.extend(sub_changes);
+            } else {
+                let diff = compute_file_diff(repo, &old_entry.oid, &ObjectId::from_raw([0; 20]), &full_path);
+                changes.push(diff);
+            }
+        }
+    }
+
+    changes
+}
+
+/// Compute diff for a single file
+fn compute_file_diff(
+    repo: &Repository,
+    old_id: &ObjectId,
+    new_id: &ObjectId,
+    path: &str,
+) -> FileChange {
+    let is_empty = |id: &ObjectId| id.as_bytes() == &[0; 20];
+
+    let old_content = if is_empty(old_id) {
+        None
+    } else {
+        repo.get_blob_content(old_id)
+    };
+
+    let new_content = if is_empty(new_id) {
+        None
+    } else {
+        repo.get_blob_content(new_id)
+    };
+
+    // Check for binary content
+    let is_binary = old_content.as_ref().map(|c| c.iter().take(8000).any(|&b| b == 0)).unwrap_or(false)
+        || new_content.as_ref().map(|c| c.iter().take(8000).any(|&b| b == 0)).unwrap_or(false);
+
+    if is_binary {
+        let status = match (&old_content, &new_content) {
+            (None, Some(_)) => "added",
+            (Some(_), None) => "deleted",
+            _ => "modified",
+        };
+        return FileChange {
+            path: path.to_string(),
+            status: status.to_string(),
+            additions: 0,
+            deletions: 0,
+            diff_lines: vec![DiffLine {
+                line_type: "header".to_string(),
+                content: "Binary file changed".to_string(),
+                old_line: None,
+                new_line: None,
+            }],
+            is_binary: true,
+        };
+    }
+
+    let old_text = old_content
+        .as_ref()
+        .map(|c| String::from_utf8_lossy(c).to_string())
+        .unwrap_or_default();
+    let new_text = new_content
+        .as_ref()
+        .map(|c| String::from_utf8_lossy(c).to_string())
+        .unwrap_or_default();
+
+    let status = match (&old_content, &new_content) {
+        (None, Some(_)) => "added",
+        (Some(_), None) => "deleted",
+        _ => "modified",
+    };
+
+    // Generate simple line-by-line diff
+    let (diff_lines, additions, deletions) = generate_diff(&old_text, &new_text);
+
+    FileChange {
+        path: path.to_string(),
+        status: status.to_string(),
+        additions,
+        deletions,
+        diff_lines,
+        is_binary: false,
+    }
+}
+
+/// Generate a simple line-by-line diff
+fn generate_diff(old: &str, new: &str) -> (Vec<DiffLine>, usize, usize) {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    // Use a simple LCS-based diff
+    let mut diff_lines = Vec::new();
+    let mut additions = 0;
+    let mut deletions = 0;
+
+    // Simple diff: for small files, just show what changed
+    // For production, you'd use a proper diff algorithm like Myers or patience
+    if old_lines.is_empty() {
+        // All additions
+        for (i, line) in new_lines.iter().enumerate() {
+            diff_lines.push(DiffLine {
+                line_type: "add".to_string(),
+                content: ammonia::clean(line),
+                old_line: None,
+                new_line: Some(i + 1),
+            });
+            additions += 1;
+        }
+    } else if new_lines.is_empty() {
+        // All deletions
+        for (i, line) in old_lines.iter().enumerate() {
+            diff_lines.push(DiffLine {
+                line_type: "del".to_string(),
+                content: ammonia::clean(line),
+                old_line: Some(i + 1),
+                new_line: None,
+            });
+            deletions += 1;
+        }
+    } else {
+        // Use simple line comparison with LCS
+        let lcs = compute_lcs(&old_lines, &new_lines);
+        let (lines, adds, dels) = build_diff_from_lcs(&old_lines, &new_lines, &lcs);
+        diff_lines = lines;
+        additions = adds;
+        deletions = dels;
+    }
+
+    (diff_lines, additions, deletions)
+}
+
+/// Compute LCS (Longest Common Subsequence) indices
+fn compute_lcs<'a>(old: &[&'a str], new: &[&'a str]) -> Vec<(usize, usize)> {
+    let m = old.len();
+    let n = new.len();
+
+    // Build LCS length table
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    for i in 1..=m {
+        for j in 1..=n {
+            if old[i - 1] == new[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1] + 1;
+            } else {
+                dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
+            }
+        }
+    }
+
+    // Backtrack to find LCS
+    let mut result = Vec::new();
+    let mut i = m;
+    let mut j = n;
+    while i > 0 && j > 0 {
+        if old[i - 1] == new[j - 1] {
+            result.push((i - 1, j - 1));
+            i -= 1;
+            j -= 1;
+        } else if dp[i - 1][j] > dp[i][j - 1] {
+            i -= 1;
+        } else {
+            j -= 1;
+        }
+    }
+    result.reverse();
+    result
+}
+
+/// Build diff lines from LCS
+fn build_diff_from_lcs(old: &[&str], new: &[&str], lcs: &[(usize, usize)]) -> (Vec<DiffLine>, usize, usize) {
+    let mut lines = Vec::new();
+    let mut additions = 0;
+    let mut deletions = 0;
+
+    let mut old_idx = 0;
+    let mut new_idx = 0;
+    let mut lcs_idx = 0;
+
+    while old_idx < old.len() || new_idx < new.len() {
+        if lcs_idx < lcs.len() {
+            let (lcs_old, lcs_new) = lcs[lcs_idx];
+
+            // Output deletions before this LCS element
+            while old_idx < lcs_old {
+                lines.push(DiffLine {
+                    line_type: "del".to_string(),
+                    content: ammonia::clean(old[old_idx]),
+                    old_line: Some(old_idx + 1),
+                    new_line: None,
+                });
+                deletions += 1;
+                old_idx += 1;
+            }
+
+            // Output additions before this LCS element
+            while new_idx < lcs_new {
+                lines.push(DiffLine {
+                    line_type: "add".to_string(),
+                    content: ammonia::clean(new[new_idx]),
+                    old_line: None,
+                    new_line: Some(new_idx + 1),
+                });
+                additions += 1;
+                new_idx += 1;
+            }
+
+            // Output the common line
+            lines.push(DiffLine {
+                line_type: "context".to_string(),
+                content: ammonia::clean(old[old_idx]),
+                old_line: Some(old_idx + 1),
+                new_line: Some(new_idx + 1),
+            });
+            old_idx += 1;
+            new_idx += 1;
+            lcs_idx += 1;
+        } else {
+            // No more LCS elements, output remaining
+            while old_idx < old.len() {
+                lines.push(DiffLine {
+                    line_type: "del".to_string(),
+                    content: ammonia::clean(old[old_idx]),
+                    old_line: Some(old_idx + 1),
+                    new_line: None,
+                });
+                deletions += 1;
+                old_idx += 1;
+            }
+            while new_idx < new.len() {
+                lines.push(DiffLine {
+                    line_type: "add".to_string(),
+                    content: ammonia::clean(new[new_idx]),
+                    old_line: None,
+                    new_line: Some(new_idx + 1),
+                });
+                additions += 1;
+                new_idx += 1;
+            }
+        }
+    }
+
+    (lines, additions, deletions)
 }

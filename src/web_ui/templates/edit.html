@@ -1,6 +1,16 @@
-{% extends "base.html" %}
-{% block title %}{% if is_new %}New File{% else %}Edit {{ file_name }}{% endif %} - OpenXet{% endblock %}
-{% block content %}
+{% extends "repo_base.html" %}
+{% block title %}{% if is_new %}New File{% else %}Edit {{ file_name }}{% endif %} - {{ full_name }} - OpenXet{% endblock %}
+
+{% block breadcrumb_extra %}
+ / <a href="/{{ full_name }}?tab=files&branch={{ ref_name }}">{{ ref_name }}</a>
+{% if not is_new %}{% for crumb in breadcrumbs %} / {% if loop.last %}{{ crumb.name }}{% else %}<a href="/{{ full_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>{% endif %}{% endfor %}{% endif %}
+{% endblock %}
+
+{% block header_actions %}
+{# No branch selector in edit mode #}
+{% endblock %}
+
+{% block repo_content %}
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
 <style>
@@ -22,14 +32,7 @@
     }
 </style>
 
-<div class="breadcrumb">
-    <a href="/">Repositories</a> /
-    <a href="/{{ full_name }}">{{ full_name }}</a> /
-    <a href="/{{ full_name }}?tab=files&branch={{ ref_name }}">{{ ref_name }}</a>
-    {% if not is_new %}{% for crumb in breadcrumbs %} / {% if loop.last %}{{ crumb.name }}{% else %}<a href="/{{ full_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>{% endif %}{% endfor %}{% endif %}
-</div>
-
-<h2 style="margin-bottom: 12px;">{% if is_new %}New file{% else %}Editing {{ file_name }}{% endif %}</h2>
+<h3 style="margin-bottom: 12px;">{% if is_new %}New file{% else %}Editing {{ file_name }}{% endif %}</h3>
 
 <form method="POST" action="/{{ full_name }}/{% if is_new %}new{% else %}edit{% endif %}/{{ ref_name }}{% if path %}/{{ path }}{% endif %}" id="edit-form">
     <div class="card">

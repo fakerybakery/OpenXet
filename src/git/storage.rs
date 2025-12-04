@@ -566,6 +566,111 @@ impl Repository {
         self.store_object(object)
     }
 
+    /// Parse a commit object and return detailed info
+    pub fn get_commit_info(&self, commit_id: &ObjectId) -> Option<CommitInfo> {
+        let obj = self.get_object(commit_id)?;
+        if obj.object_type != ObjectType::Commit {
+            return None;
+        }
+
+        let data = std::str::from_utf8(&obj.data).ok()?;
+        let mut tree_id = None;
+        let mut parent_ids = Vec::new();
+        let mut author_name = String::new();
+        let mut author_email = String::new();
+        let mut author_time: i64 = 0;
+        let mut committer_name = String::new();
+        let mut committer_email = String::new();
+        let mut committer_time: i64 = 0;
+        let mut in_message = false;
+        let mut message_lines = Vec::new();
+
+        for line in data.lines() {
+            if in_message {
+                message_lines.push(line);
+            } else if line.is_empty() {
+                in_message = true;
+            } else if let Some(hash) = line.strip_prefix("tree ") {
+                tree_id = ObjectId::from_hex(hash.trim());
+            } else if let Some(hash) = line.strip_prefix("parent ") {
+                if let Some(pid) = ObjectId::from_hex(hash.trim()) {
+                    parent_ids.push(pid);
+                }
+            } else if let Some(rest) = line.strip_prefix("author ") {
+                if let Some((name, email, time)) = parse_signature(rest) {
+                    author_name = name;
+                    author_email = email;
+                    author_time = time;
+                }
+            } else if let Some(rest) = line.strip_prefix("committer ") {
+                if let Some((name, email, time)) = parse_signature(rest) {
+                    committer_name = name;
+                    committer_email = email;
+                    committer_time = time;
+                }
+            }
+        }
+
+        let message = message_lines.join("\n").trim().to_string();
+        let short_message = message.lines().next().unwrap_or("").to_string();
+
+        Some(CommitInfo {
+            id: *commit_id,
+            tree_id: tree_id?,
+            parent_ids,
+            author_name,
+            author_email,
+            author_time,
+            committer_name,
+            committer_email,
+            committer_time,
+            message,
+            short_message,
+        })
+    }
+
+    /// Walk commit history from a starting commit
+    /// Returns commits in reverse chronological order, up to `limit` commits
+    pub fn walk_commits(&self, start_id: &ObjectId, limit: usize, skip: usize) -> Vec<CommitInfo> {
+        let mut commits = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(*start_id);
+        let mut skipped = 0;
+
+        while let Some(commit_id) = queue.pop_front() {
+            if visited.contains(&commit_id) {
+                continue;
+            }
+            visited.insert(commit_id);
+
+            if let Some(info) = self.get_commit_info(&commit_id) {
+                // Add parents to queue (for BFS traversal)
+                for parent_id in &info.parent_ids {
+                    if !visited.contains(parent_id) {
+                        queue.push_back(*parent_id);
+                    }
+                }
+
+                // Handle skip/limit
+                if skipped < skip {
+                    skipped += 1;
+                    continue;
+                }
+
+                commits.push(info);
+                if commits.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        // Sort by commit time (most recent first)
+        commits.sort_by(|a, b| b.committer_time.cmp(&a.committer_time));
+
+        commits
+    }
+
     /// Create a new commit
     pub fn create_commit(
         &self,
@@ -611,6 +716,22 @@ pub struct TreeEntry {
     pub is_dir: bool,
     pub is_executable: bool,
     pub is_symlink: bool,
+}
+
+/// Parsed commit information
+#[derive(Clone, Debug)]
+pub struct CommitInfo {
+    pub id: ObjectId,
+    pub tree_id: ObjectId,
+    pub parent_ids: Vec<ObjectId>,
+    pub author_name: String,
+    pub author_email: String,
+    pub author_time: i64,
+    pub committer_name: String,
+    pub committer_email: String,
+    pub committer_time: i64,
+    pub message: String,
+    pub short_message: String,
 }
 
 /// Repository storage manager with SQLite persistence
@@ -975,6 +1096,22 @@ impl Default for RepositoryStore {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Parse a git signature line like "Name <email> timestamp timezone"
+fn parse_signature(s: &str) -> Option<(String, String, i64)> {
+    // Format: "Name <email> timestamp timezone"
+    let email_start = s.find('<')?;
+    let email_end = s.find('>')?;
+
+    let name = s[..email_start].trim().to_string();
+    let email = s[email_start + 1..email_end].to_string();
+
+    // Parse timestamp after email
+    let rest = s[email_end + 1..].trim();
+    let timestamp: i64 = rest.split_whitespace().next()?.parse().ok()?;
+
+    Some((name, email, timestamp))
 }
 
 #[cfg(test)]

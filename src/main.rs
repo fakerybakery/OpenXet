@@ -71,21 +71,23 @@ async fn main() {
         tracing::info!("Loaded {} repositories from database", state.repos.list_repos().len());
     }
 
-    // Build router - specific routes first, then wildcard
+    // Build router with explicit routes
+    // Git/LFS routes use patterns that include ".git" or specific paths
+    // Web UI routes use /:owner/:repo patterns for browsing
     let app = Router::new()
-        // Web UI (Optional: remove .merge() line to disable web UI)
-        .merge(web_ui::router())
-        // API endpoints (must come before wildcard)
+        // API endpoints (explicit /api prefix)
         .route("/api/repos", get(api::list_repos))
-        .route("/api/repos/:repo", post(api::create_repo))
-        .route("/api/repos/:repo", delete(api::delete_repo))
-        .route("/api/repos/:repo/refs", get(api::list_refs))
+        .route("/api/repos/:owner/:repo", post(api::create_repo))
+        .route("/api/repos/:owner/:repo", delete(api::delete_repo))
+        .route("/api/repos/:owner/:repo/refs", get(api::list_refs))
         .route("/api/auth/login", post(api::login))
         .route("/api/cas/stats", get(api::cas_stats))
         // Health check
         .route("/health", get(api::health))
-        // Git Smart HTTP + LFS endpoints (wildcard - catches remaining paths)
-        .route("/*repo", get(api::wildcard_get).post(api::wildcard_post).put(api::wildcard_put))
+        // Merge Git/LFS router (uses nested paths to avoid conflicts)
+        .merge(api::git_router())
+        // Web UI (uses /:owner/:repo patterns)
+        .merge(web_ui::router())
         .with_state(state)
         // Allow large file uploads (10GB limit)
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024 * 1024))

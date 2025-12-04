@@ -1,6 +1,26 @@
-{% extends "base.html" %}
-{% block title %}{{ file_name }} - OpenXet{% endblock %}
-{% block content %}
+{% extends "repo_base.html" %}
+{% block title %}{{ file_name }} - {{ full_name }} - OpenXet{% endblock %}
+
+{% block breadcrumb_extra %}
+ / <a href="/{{ full_name }}?tab=files&branch={{ ref_name }}">{{ ref_name }}</a>
+{% for crumb in breadcrumbs %} / {% if loop.last %}{{ crumb.name }}{% else %}<a href="/{{ full_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>{% endif %}{% endfor %}
+{% endblock %}
+
+{% block header_actions %}
+{% if branches %}
+<select name="branch" class="branch-select" onchange="handleBranchChange(this.value)">
+    {% for branch in branches %}
+    <option value="{{ branch.name }}" {% if branch.name == ref_name %}selected{% endif %}>{{ branch.name }}</option>
+    {% endfor %}
+</select>
+{% endif %}
+{% endblock %}
+
+{% block branch_change_handler %}
+window.location.href = '/{{ full_name }}/blob/' + branch + '/{{ path }}';
+{% endblock %}
+
+{% block repo_content %}
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
 <style>
     .code-view { overflow-x: auto; }
@@ -29,13 +49,6 @@
     .code-content code { padding: 0 !important; background: transparent !important; display: block; }
     .hljs { background: transparent !important; padding: 0 !important; }
 </style>
-
-<div class="breadcrumb">
-    <a href="/">Repositories</a> /
-    <a href="/{{ full_name }}">{{ full_name }}</a> /
-    <a href="/{{ full_name }}?tab=files&branch={{ ref_name }}">{{ ref_name }}</a>
-    {% for crumb in breadcrumbs %} / {% if loop.last %}{{ crumb.name }}{% else %}<a href="/{{ full_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>{% endif %}{% endfor %}
-</div>
 
 <div class="card">
     <div class="file-header">

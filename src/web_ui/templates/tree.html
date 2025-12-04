@@ -1,25 +1,27 @@
-{% extends "base.html" %}
+{% extends "repo_base.html" %}
 {% block title %}{{ repo_name }}/{{ path }} - OpenXet{% endblock %}
-{% block content %}
-<div class="breadcrumb">
-    <a href="/">Repositories</a> /
-    <a href="/{{ full_name }}">{{ full_name }}</a> /
-    <a href="/{{ full_name }}?tab=files&branch={{ ref_name }}">{{ ref_name }}</a>
-    {% for crumb in breadcrumbs %} / <a href="/{{ full_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>{% endfor %}
-</div>
 
-<div class="flex items-center justify-between mb-2">
-    <h2 style="margin: 0;">{{ current_name }}</h2>
-    <div class="flex items-center gap-2">
-        <a href="/{{ full_name }}/new/{{ ref_name }}{% if path %}/{{ path }}{% endif %}" class="btn">New File</a>
-        <select class="branch-select" onchange="window.location.href='/{{ full_name }}/tree/' + this.value + '{% if path %}/{{ path }}{% endif %}'">
-            {% for branch in branches %}
-            <option value="{{ branch.name }}" {% if branch.name == ref_name %}selected{% endif %}>{{ branch.name }}</option>
-            {% endfor %}
-        </select>
-    </div>
-</div>
+{% block breadcrumb_extra %}
+ / <a href="/{{ full_name }}?tab=files&branch={{ ref_name }}">{{ ref_name }}</a>
+{% for crumb in breadcrumbs %} / <a href="/{{ full_name }}/tree/{{ ref_name }}/{{ crumb.path }}">{{ crumb.name }}</a>{% endfor %}
+{% endblock %}
 
+{% block header_actions %}
+<a href="/{{ full_name }}/new/{{ ref_name }}{% if path %}/{{ path }}{% endif %}" class="btn">New File</a>
+{% if branches %}
+<select class="branch-select" onchange="handleBranchChange(this.value)">
+    {% for branch in branches %}
+    <option value="{{ branch.name }}" {% if branch.name == ref_name %}selected{% endif %}>{{ branch.name }}</option>
+    {% endfor %}
+</select>
+{% endif %}
+{% endblock %}
+
+{% block branch_change_handler %}
+window.location.href = '/{{ full_name }}/tree/' + branch + '{% if path %}/{{ path }}{% endif %}';
+{% endblock %}
+
+{% block repo_content %}
 <div class="card">
     <ul class="list">
         {% if parent_path is defined %}

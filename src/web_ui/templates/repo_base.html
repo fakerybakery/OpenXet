@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="breadcrumb">
+    <a href="/">Repositories</a> / <a href="/{{ owner }}">{{ owner }}</a> / <a href="/{{ full_name }}"><strong>{{ repo_name }}</strong></a>
+    {% block breadcrumb_extra %}{% endblock %}
+</div>
+
+<div class="flex items-center justify-between mb-2">
+    <h2 style="margin: 0;">{{ full_name }}</h2>
+    <div class="flex items-center gap-2">
+        {% block header_actions %}
+        {% if branches %}
+        <a href="/{{ full_name }}/new/{{ current_branch | default(value=ref_name) | default(value='main') }}" class="btn">New File</a>
+        <select name="branch" class="branch-select" onchange="handleBranchChange(this.value)">
+            {% for branch in branches %}
+            <option value="{{ branch.name }}" {% if branch.name == current_branch or branch.name == ref_name %}selected{% endif %}>{{ branch.name }}</option>
+            {% endfor %}
+        </select>
+        {% endif %}
+        {% endblock %}
+    </div>
+</div>
+
+<div class="tabs">
+    {% set current_ref = current_branch | default(value=ref_name) | default(value='main') %}
+    {% set tab = active_tab | default(value='') %}
+    <a href="/{{ full_name }}?tab=overview&branch={{ current_ref }}" class="tab {% if tab == 'overview' %}active{% endif %}">Overview</a>
+    <a href="/{{ full_name }}?tab=files&branch={{ current_ref }}" class="tab {% if tab == 'files' %}active{% endif %}">Files</a>
+    <a href="/{{ full_name }}/commits/{{ current_ref }}" class="tab {% if tab == 'commits' %}active{% endif %}">Commits</a>
+</div>
+
+{% block repo_content %}{% endblock %}
+
+<script>
+function handleBranchChange(branch) {
+    {% block branch_change_handler %}
+    window.location.href = '/{{ full_name }}?tab={{ active_tab | default(value="overview") }}&branch=' + branch;
+    {% endblock %}
+}
+</script>
+{% endblock %}

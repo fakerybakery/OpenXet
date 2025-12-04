@@ -125,160 +125,24 @@ pub struct InfoRefsQuery {
     pub service: Option<String>,
 }
 
-/// Wildcard GET handler - routes Git and LFS requests
-pub async fn wildcard_get(
+// ============================================================================
+// Git Smart HTTP Handlers (typed routes)
+// ============================================================================
+
+/// GET /:owner/:repo/info/refs - Reference advertisement
+pub async fn git_info_refs(
     State(state): State<Arc<AppState>>,
-    Path(path): Path<String>,
+    Path((owner, repo)): Path<(String, String)>,
     Query(query): Query<InfoRefsQuery>,
     headers: HeaderMap,
 ) -> Response {
-    tracing::debug!("wildcard_get: path={}", path);
-
-    // Parse the path: expect {repo}/info/refs or {repo}.git/info/refs
-    if path.ends_with("/info/refs") {
-        let repo_path = path.trim_end_matches("/info/refs");
-        return info_refs_inner(state, repo_path.to_string(), query, headers).await;
-    }
-
-    // LFS download: {repo}/info/lfs/objects/{oid}
-    if path.contains("/info/lfs/objects/") && !path.ends_with("/batch") {
-        let parts: Vec<&str> = path.splitn(2, "/info/lfs/objects/").collect();
-        if parts.len() == 2 {
-            let repo = parts[0].to_string();
-            let oid = parts[1].to_string();
-            return super::lfs::lfs_download(
-                State(state),
-                Path((repo, oid)),
-                headers,
-            ).await;
-        }
-    }
-
-    // Not a Git request
-    Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .body(Body::from("Not found"))
-        .unwrap()
-}
-
-/// Wildcard PUT handler - routes LFS uploads (streaming)
-pub async fn wildcard_put(
-    State(state): State<Arc<AppState>>,
-    Path(path): Path<String>,
-    request: axum::extract::Request,
-) -> Response {
-    tracing::debug!("wildcard_put: path={}", path);
-
-    // Extract headers before consuming request
-    let headers = request.headers().clone();
-
-    // LFS upload: {repo}/info/lfs/objects/{oid}
-    if path.contains("/info/lfs/objects/") {
-        let parts: Vec<&str> = path.splitn(2, "/info/lfs/objects/").collect();
-        if parts.len() == 2 {
-            let repo = parts[0].to_string();
-            let oid = parts[1].to_string();
-            return super::lfs::lfs_upload(
-                State(state),
-                Path((repo, oid)),
-                headers,
-                request,
-            ).await;
-        }
-    }
-
-    Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .body(Body::from("Not found"))
-        .unwrap()
-}
-
-/// Wildcard POST handler - routes Git and LFS requests
-pub async fn wildcard_post(
-    State(state): State<Arc<AppState>>,
-    Path(path): Path<String>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    tracing::debug!("wildcard_post: path={}", path);
-
-    // Parse the path: expect {repo}/git-upload-pack or {repo}/git-receive-pack
-    if path.ends_with("/git-upload-pack") {
-        let repo_path = path.trim_end_matches("/git-upload-pack");
-        return git_upload_pack_inner(state, repo_path.to_string(), headers, body).await;
-    }
-
-    if path.ends_with("/git-receive-pack") {
-        let repo_path = path.trim_end_matches("/git-receive-pack");
-        return git_receive_pack_inner(state, repo_path.to_string(), headers, body).await;
-    }
-
-    // LFS Batch API: {repo}/info/lfs/objects/batch
-    if path.ends_with("/info/lfs/objects/batch") {
-        let repo_path = path.trim_end_matches("/info/lfs/objects/batch");
-        // Parse JSON body
-        match serde_json::from_slice(&body) {
-            Ok(request) => {
-                return super::lfs::lfs_batch(
-                    State(state),
-                    Path(repo_path.to_string()),
-                    headers,
-                    axum::Json(request),
-                ).await;
-            }
-            Err(e) => {
-                return Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .header(header::CONTENT_TYPE, "application/vnd.git-lfs+json")
-                    .body(Body::from(format!("{{\"message\": \"Invalid JSON: {}\"}}", e)))
-                    .unwrap();
-            }
-        }
-    }
-
-    // LFS verify: {repo}/info/lfs/verify
-    if path.ends_with("/info/lfs/verify") {
-        let repo_path = path.trim_end_matches("/info/lfs/verify");
-        match serde_json::from_slice(&body) {
-            Ok(request) => {
-                return super::lfs::lfs_verify(
-                    State(state),
-                    Path(repo_path.to_string()),
-                    headers,
-                    axum::Json(request),
-                ).await;
-            }
-            Err(e) => {
-                return Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .header(header::CONTENT_TYPE, "application/vnd.git-lfs+json")
-                    .body(Body::from(format!("{{\"message\": \"Invalid JSON: {}\"}}", e)))
-                    .unwrap();
-            }
-        }
-    }
-
-    // Not a Git request
-    Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .body(Body::from("Not found"))
-        .unwrap()
-}
-
-/// GET /:repo/info/refs - Reference advertisement (inner impl)
-async fn info_refs_inner(
-    state: Arc<AppState>,
-    repo_path: String,
-    query: InfoRefsQuery,
-    headers: HeaderMap,
-) -> Response {
-    tracing::debug!("info_refs_inner called with repo_path: {}", repo_path);
-    let repo_name = repo_path.trim_end_matches(".git");
-    tracing::debug!("repo_name after trimming: {}", repo_name);
+    let repo_name_raw = repo.trim_end_matches(".git");
+    let repo_name = format!("{}/{}", owner, repo_name_raw);
+    tracing::debug!("git_info_refs: repo_name={}", repo_name);
     let token = extract_auth(&headers, &state.auth);
 
     // Check read permission
-    if let Err(e) = state.auth.check_permission(token.as_ref(), repo_name, false) {
+    if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false) {
         if matches!(e, ServerError::AuthRequired) {
             return require_auth_response();
         }
@@ -300,7 +164,7 @@ async fn info_refs_inner(
     };
 
     // Get or create repository
-    let repo = state.repos.get_or_create_repo(repo_name);
+    let repo = state.repos.get_or_create_repo(&repo_name);
 
     let body = generate_ref_advertisement(&repo, service);
 
@@ -312,26 +176,27 @@ async fn info_refs_inner(
         .unwrap()
 }
 
-/// POST /:repo/git-upload-pack - Handle fetch/clone (inner impl)
-async fn git_upload_pack_inner(
-    state: Arc<AppState>,
-    repo_path: String,
+/// POST /:owner/:repo/git-upload-pack - Handle fetch/clone
+pub async fn git_upload_pack(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo)): Path<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    tracing::debug!("git_upload_pack_inner: repo_path={}", repo_path);
-    let repo_name = repo_path.trim_end_matches(".git");
+    let repo_name_raw = repo.trim_end_matches(".git");
+    let repo_name = format!("{}/{}", owner, repo_name_raw);
+    tracing::debug!("git_upload_pack: repo_name={}", repo_name);
     let token = extract_auth(&headers, &state.auth);
 
     // Check read permission
-    if let Err(e) = state.auth.check_permission(token.as_ref(), repo_name, false) {
+    if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false) {
         if matches!(e, ServerError::AuthRequired) {
             return require_auth_response();
         }
         return e.into_response();
     }
 
-    let repo = match state.repos.get_repo(repo_name) {
+    let repo = match state.repos.get_repo(&repo_name) {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
@@ -350,26 +215,27 @@ async fn git_upload_pack_inner(
     }
 }
 
-/// POST /:repo/git-receive-pack - Handle push (inner impl)
-async fn git_receive_pack_inner(
-    state: Arc<AppState>,
-    repo_path: String,
+/// POST /:owner/:repo/git-receive-pack - Handle push
+pub async fn git_receive_pack(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo)): Path<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    tracing::debug!("git_receive_pack_inner: repo_path={}", repo_path);
-    let repo_name = repo_path.trim_end_matches(".git");
+    let repo_name_raw = repo.trim_end_matches(".git");
+    let repo_name = format!("{}/{}", owner, repo_name_raw);
+    tracing::debug!("git_receive_pack: repo_name={}", repo_name);
     let token = extract_auth(&headers, &state.auth);
 
     // Check write permission
-    if let Err(e) = state.auth.check_permission(token.as_ref(), repo_name, true) {
+    if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, true) {
         if matches!(e, ServerError::AuthRequired) {
             return require_auth_response();
         }
         return e.into_response();
     }
 
-    let repo = state.repos.get_or_create_repo(repo_name);
+    let repo = state.repos.get_or_create_repo(&repo_name);
 
     match handle_receive_pack(&repo, &body) {
         Ok(response_body) => Response::builder()
@@ -408,12 +274,13 @@ pub async fn list_repos(
         .unwrap()
 }
 
-/// POST /api/repos/:repo - Create repository
+/// POST /api/repos/:owner/:repo - Create repository
 pub async fn create_repo(
     State(state): State<Arc<AppState>>,
-    Path(repo_name): Path<String>,
+    Path((owner, repo)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
+    let repo_name = format!("{}/{}", owner, repo);
     let token = extract_auth(&headers, &state.auth);
 
     // Require write permission
@@ -440,12 +307,13 @@ pub async fn create_repo(
     }
 }
 
-/// DELETE /api/repos/:repo - Delete repository
+/// DELETE /api/repos/:owner/:repo - Delete repository
 pub async fn delete_repo(
     State(state): State<Arc<AppState>>,
-    Path(repo_name): Path<String>,
+    Path((owner, repo)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
+    let repo_name = format!("{}/{}", owner, repo);
     let token = extract_auth(&headers, &state.auth);
 
     // Check admin permission
@@ -472,12 +340,13 @@ pub async fn delete_repo(
     }
 }
 
-/// GET /api/repos/:repo/refs - List refs
+/// GET /api/repos/:owner/:repo/refs - List refs
 pub async fn list_refs(
     State(state): State<Arc<AppState>>,
-    Path(repo_name): Path<String>,
+    Path((owner, repo)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
+    let repo_name = format!("{}/{}", owner, repo);
     let token = extract_auth(&headers, &state.auth);
 
     if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false) {
