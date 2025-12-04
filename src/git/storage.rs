@@ -875,8 +875,10 @@ impl RepositoryStore {
         let result = user::Entity::insert(user::ActiveModel {
             id: sea_orm::ActiveValue::NotSet,
             username: Set(username.to_string()),
+            password_hash: Set("".to_string()), // No password - created implicitly
             display_name: Set(None),
             email: Set(None),
+            is_org: Set(false),
             created_at: Set(now),
         })
         .exec(&**db)
@@ -980,8 +982,10 @@ impl RepositoryStore {
                         match user::Entity::insert(user::ActiveModel {
                             id: sea_orm::ActiveValue::NotSet,
                             username: Set(owner.clone()),
+                            password_hash: Set("".to_string()), // No password
                             display_name: Set(None),
                             email: Set(None),
+                            is_org: Set(false),
                             created_at: Set(now),
                         })
                         .exec(&*db)

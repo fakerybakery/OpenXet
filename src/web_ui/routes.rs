@@ -2,7 +2,7 @@
 
 use axum::{
     extract::{Path, State, Form, Query},
-    http::StatusCode,
+    http::{StatusCode, HeaderMap},
     response::{Html, IntoResponse, Response, Redirect},
     routing::get,
     Router,
@@ -19,6 +19,12 @@ use super::templates;
 pub fn create_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(index))
+        // Auth pages
+        .route("/-/login", get(login_page).post(login_submit))
+        .route("/-/signup", get(signup_page).post(signup_submit))
+        .route("/-/logout", get(logout))
+        // Repo management
+        .route("/-/new", get(new_repo_page).post(create_repo))
         // Stats page
         .route("/-/stats", get(stats))
         // User profile page (must come before /:owner/:repo)
@@ -37,16 +43,37 @@ pub fn create_router() -> Router<Arc<AppState>> {
 }
 
 /// Home page
-async fn index(State(state): State<Arc<AppState>>) -> Response {
+async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let mut context = Context::new();
 
     let repos: Vec<String> = state.repos.list_repos();
-    let stats = state.cas.stats();
+    let cas_stats = state.cas.stats();
+    let lfs_stats = state.cas.lfs_stats();
 
     context.insert("repos", &repos);
     context.insert("repo_count", &repos.len());
-    context.insert("block_count", &stats.block_count);
-    context.insert("chunk_count", &stats.chunk_count);
+    context.insert("block_count", &cas_stats.block_count);
+    context.insert("chunk_count", &cas_stats.chunk_count);
+
+    // LFS storage stats for savings display
+    context.insert("lfs_object_count", &lfs_stats.object_count);
+    context.insert("total_uploaded", &format_size(lfs_stats.total_logical_size));
+    context.insert("total_stored", &format_size(lfs_stats.total_physical_size));
+    context.insert("total_uploaded_bytes", &lfs_stats.total_logical_size);
+    context.insert("total_stored_bytes", &lfs_stats.total_physical_size);
+
+    // Calculate savings
+    let savings_bytes = lfs_stats.total_logical_size.saturating_sub(lfs_stats.total_physical_size);
+    let savings_percent = if lfs_stats.total_logical_size > 0 {
+        (savings_bytes as f64 / lfs_stats.total_logical_size as f64) * 100.0
+    } else {
+        0.0
+    };
+    context.insert("savings", &format_size(savings_bytes));
+    context.insert("savings_percent", &format!("{:.1}", savings_percent));
+    context.insert("dedup_ratio", &format!("{:.2}x", lfs_stats.dedup_ratio));
+
+    add_user_to_context(&mut context, &state, &headers).await;
 
     render_template("index.html", &context)
 }
@@ -55,6 +82,7 @@ async fn index(State(state): State<Arc<AppState>>) -> Response {
 async fn user_profile(
     State(state): State<Arc<AppState>>,
     Path(owner): Path<String>,
+    headers: HeaderMap,
 ) -> Response {
     // Get all repos and filter by owner
     let all_repos = state.repos.list_repos();
@@ -73,6 +101,8 @@ async fn user_profile(
     context.insert("repos", &user_repos);
     context.insert("repo_count", &user_repos.len());
 
+    add_user_to_context(&mut context, &state, &headers).await;
+
     render_template("user.html", &context)
 }
 
@@ -88,6 +118,7 @@ async fn repo_detail(
     State(state): State<Arc<AppState>>,
     Path((owner, repo)): Path<(String, String)>,
     Query(query): Query<RepoQuery>,
+    headers: HeaderMap,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
     let full_name = format!("{}/{}", owner, repo_name);
@@ -166,6 +197,8 @@ async fn repo_detail(
         }
     }
 
+    add_user_to_context(&mut context, &state, &headers).await;
+
     render_template("repo.html", &context)
 }
 
@@ -233,7 +266,7 @@ fn check_lfs_file(
 }
 
 /// Stats page
-async fn stats(State(state): State<Arc<AppState>>) -> Response {
+async fn stats(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let mut context = Context::new();
 
     let repos: Vec<String> = state.repos.list_repos();
@@ -247,6 +280,8 @@ async fn stats(State(state): State<Arc<AppState>>) -> Response {
     context.insert("reconstruction_count", &cas_stats.reconstruction_count);
     context.insert("lfs_object_count", &lfs_stats.object_count);
 
+    add_user_to_context(&mut context, &state, &headers).await;
+
     render_template("index.html", &context)
 }
 
@@ -258,6 +293,28 @@ fn render_template(name: &str, context: &Context) -> Response {
             tracing::error!("Template error: {:?}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, format!("Template error: {}", e)).into_response()
         }
+    }
+}
+
+/// Extract current username from cookie token
+async fn get_current_user(state: &AppState, headers: &HeaderMap) -> Option<String> {
+    let cookie_header = headers.get("cookie")?.to_str().ok()?;
+    for part in cookie_header.split(';') {
+        let part = part.trim();
+        if let Some(token) = part.strip_prefix("token=") {
+            // Validate token and get username
+            if let Some(username) = state.auth.get_username_for_token(token).await {
+                return Some(username);
+            }
+        }
+    }
+    None
+}
+
+/// Add current user to context if logged in
+async fn add_user_to_context(context: &mut Context, state: &AppState, headers: &HeaderMap) {
+    if let Some(username) = get_current_user(state, headers).await {
+        context.insert("current_user", &username);
     }
 }
 
@@ -295,16 +352,18 @@ struct Breadcrumb {
 async fn tree_root(
     State(state): State<Arc<AppState>>,
     Path((owner, repo, ref_name)): Path<(String, String, String)>,
+    headers: HeaderMap,
 ) -> Response {
-    tree_view_impl(state, &owner, &repo, &ref_name, "").await
+    tree_view_impl(state, &owner, &repo, &ref_name, "", headers).await
 }
 
 /// View tree at a specific path
 async fn tree_path(
     State(state): State<Arc<AppState>>,
     Path((owner, repo, ref_name, path)): Path<(String, String, String, String)>,
+    headers: HeaderMap,
 ) -> Response {
-    tree_view_impl(state, &owner, &repo, &ref_name, &path).await
+    tree_view_impl(state, &owner, &repo, &ref_name, &path, headers).await
 }
 
 /// Implementation for tree viewing
@@ -314,6 +373,7 @@ async fn tree_view_impl(
     repo: &str,
     ref_name: &str,
     path: &str,
+    headers: HeaderMap,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
     let full_name = format!("{}/{}", owner, repo_name);
@@ -458,6 +518,8 @@ async fn tree_view_impl(
     context.insert("entries", &entry_infos);
     context.insert("active_tab", "files");
 
+    add_user_to_context(&mut context, &state, &headers).await;
+
     render_template("tree.html", &context)
 }
 
@@ -465,6 +527,7 @@ async fn tree_view_impl(
 async fn blob_view(
     State(state): State<Arc<AppState>>,
     Path((owner, repo, ref_name, path)): Path<(String, String, String, String)>,
+    headers: HeaderMap,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
     let full_name = format!("{}/{}", owner, repo_name);
@@ -575,6 +638,8 @@ async fn blob_view(
         context.insert("content", &text);
     }
 
+    add_user_to_context(&mut context, &state, &headers).await;
+
     render_template("blob.html", &context)
 }
 
@@ -640,6 +705,7 @@ struct EditForm {
 async fn edit_file(
     State(state): State<Arc<AppState>>,
     Path((owner, repo, ref_name, path)): Path<(String, String, String, String)>,
+    headers: HeaderMap,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
     let full_name = format!("{}/{}", owner, repo_name);
@@ -716,24 +782,30 @@ async fn edit_file(
     context.insert("is_new", &false);
     context.insert("active_tab", "files");
 
+    add_user_to_context(&mut context, &state, &headers).await;
+
     render_template("edit.html", &context)
 }
 
 /// New file (GET - show editor for new file) - root level
 async fn new_file(
+    State(state): State<Arc<AppState>>,
     Path((owner, repo, ref_name)): Path<(String, String, String)>,
+    headers: HeaderMap,
 ) -> Response {
-    render_new_file_form(&owner, &repo, &ref_name, "")
+    render_new_file_form(&state, &headers, &owner, &repo, &ref_name, "").await
 }
 
 /// New file (GET - show editor for new file) - in directory
 async fn new_file_in_dir(
+    State(state): State<Arc<AppState>>,
     Path((owner, repo, ref_name, dir_path)): Path<(String, String, String, String)>,
+    headers: HeaderMap,
 ) -> Response {
-    render_new_file_form(&owner, &repo, &ref_name, &dir_path)
+    render_new_file_form(&state, &headers, &owner, &repo, &ref_name, &dir_path).await
 }
 
-fn render_new_file_form(owner: &str, repo: &str, ref_name: &str, dir_path: &str) -> Response {
+async fn render_new_file_form(state: &AppState, headers: &HeaderMap, owner: &str, repo: &str, ref_name: &str, dir_path: &str) -> Response {
     let repo_name = repo.trim_end_matches(".git");
     let full_name = format!("{}/{}", owner, repo_name);
 
@@ -758,6 +830,8 @@ fn render_new_file_form(owner: &str, repo: &str, ref_name: &str, dir_path: &str)
     let breadcrumbs: Vec<Breadcrumb> = Vec::new();
     context.insert("breadcrumbs", &breadcrumbs);
     context.insert("active_tab", "files");
+
+    add_user_to_context(&mut context, state, headers).await;
 
     render_template("edit.html", &context)
 }
@@ -1275,6 +1349,7 @@ async fn commits_list(
     State(state): State<Arc<AppState>>,
     Path((owner, repo, ref_name)): Path<(String, String, String)>,
     Query(query): Query<CommitsQuery>,
+    headers: HeaderMap,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
     let full_name = format!("{}/{}", owner, repo_name);
@@ -1322,6 +1397,8 @@ async fn commits_list(
     context.insert("branches", &branches);
     context.insert("active_tab", "commits");
 
+    add_user_to_context(&mut context, &state, &headers).await;
+
     render_template("commits.html", &context)
 }
 
@@ -1349,6 +1426,7 @@ struct DiffLine {
 async fn commit_view(
     State(state): State<Arc<AppState>>,
     Path((owner, repo, sha)): Path<(String, String, String)>,
+    headers: HeaderMap,
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
     let full_name = format!("{}/{}", owner, repo_name);
@@ -1407,6 +1485,8 @@ async fn commit_view(
     context.insert("branches", &branches);
     context.insert("ref_name", &default_branch);
     context.insert("active_tab", "commits");
+
+    add_user_to_context(&mut context, &state, &headers).await;
 
     render_template("commit.html", &context)
 }
@@ -1780,4 +1860,178 @@ fn build_diff_from_lcs(old: &[&str], new: &[&str], lcs: &[(usize, usize)]) -> (V
     }
 
     (lines, additions, deletions)
+}
+
+// ============================================================================
+// Authentication Web UI Handlers
+// ============================================================================
+
+/// Login form data
+#[derive(serde::Deserialize)]
+struct LoginForm {
+    username: String,
+    password: String,
+}
+
+/// Signup form data
+#[derive(serde::Deserialize)]
+struct SignupForm {
+    username: String,
+    password: String,
+    email: Option<String>,
+}
+
+/// Login page (GET)
+async fn login_page(Query(query): Query<std::collections::HashMap<String, String>>) -> Response {
+    let mut context = Context::new();
+    if let Some(error) = query.get("error") {
+        context.insert("error", error);
+    }
+    if let Some(msg) = query.get("message") {
+        context.insert("message", msg);
+    }
+    render_template("login.html", &context)
+}
+
+/// Login submit (POST)
+async fn login_submit(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<LoginForm>,
+) -> Response {
+    match state.auth.authenticate(&form.username, &form.password).await {
+        Ok(token) => {
+            // Set cookie and redirect to home
+            // For simplicity, we'll redirect with the token in a cookie
+            Response::builder()
+                .status(StatusCode::SEE_OTHER)
+                .header("Location", "/")
+                .header("Set-Cookie", format!("token={}; Path=/; HttpOnly; SameSite=Lax", token.token))
+                .body(axum::body::Body::empty())
+                .unwrap()
+        }
+        Err(_) => {
+            Redirect::to("/-/login?error=Invalid+username+or+password").into_response()
+        }
+    }
+}
+
+/// Signup page (GET)
+async fn signup_page(Query(query): Query<std::collections::HashMap<String, String>>) -> Response {
+    let mut context = Context::new();
+    if let Some(error) = query.get("error") {
+        context.insert("error", error);
+    }
+    render_template("signup.html", &context)
+}
+
+/// Signup submit (POST)
+async fn signup_submit(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<SignupForm>,
+) -> Response {
+    // Validate
+    if form.username.len() < 2 {
+        return Redirect::to("/-/signup?error=Username+must+be+at+least+2+characters").into_response();
+    }
+    if form.password.len() < 4 {
+        return Redirect::to("/-/signup?error=Password+must+be+at+least+4+characters").into_response();
+    }
+    // Only allow alphanumeric and dashes in username
+    if !form.username.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Redirect::to("/-/signup?error=Username+can+only+contain+letters,+numbers,+dashes,+and+underscores").into_response();
+    }
+
+    match state.auth.register_user(&form.username, &form.password, form.email.as_deref()).await {
+        Ok(_) => {
+            // Redirect to login with success message
+            Redirect::to("/-/login?message=Account+created!+Please+log+in.").into_response()
+        }
+        Err(e) => {
+            let error_msg = e.to_string().replace(' ', "+");
+            Redirect::to(&format!("/-/signup?error={}", error_msg)).into_response()
+        }
+    }
+}
+
+/// Logout (GET)
+async fn logout() -> Response {
+    // Clear cookie and redirect
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("Location", "/")
+        .header("Set-Cookie", "token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+// ============================================================================
+// Repository Creation Handlers
+// ============================================================================
+
+/// New repo form data
+#[derive(serde::Deserialize)]
+struct NewRepoForm {
+    name: String,
+}
+
+/// New repository page (GET)
+async fn new_repo_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let mut context = Context::new();
+
+    // Check if user is logged in
+    let current_user = get_current_user(&state, &headers).await;
+    if current_user.is_none() {
+        return Redirect::to("/-/login?error=Please+sign+in+to+create+a+repository").into_response();
+    }
+
+    context.insert("current_user", &current_user);
+
+    if let Some(error) = query.get("error") {
+        context.insert("error", error);
+    }
+
+    render_template("new_repo.html", &context)
+}
+
+/// Create repository (POST)
+async fn create_repo(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<NewRepoForm>,
+) -> Response {
+    // Check if user is logged in
+    let current_user = match get_current_user(&state, &headers).await {
+        Some(u) => u,
+        None => return Redirect::to("/-/login?error=Please+sign+in+to+create+a+repository").into_response(),
+    };
+
+    // Validate repo name
+    let name = form.name.trim();
+    if name.is_empty() {
+        return Redirect::to("/-/new?error=Repository+name+cannot+be+empty").into_response();
+    }
+    if name.len() < 2 {
+        return Redirect::to("/-/new?error=Repository+name+must+be+at+least+2+characters").into_response();
+    }
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.') {
+        return Redirect::to("/-/new?error=Repository+name+can+only+contain+letters,+numbers,+dashes,+underscores,+and+dots").into_response();
+    }
+
+    // Create repo path
+    let full_name = format!("{}/{}", current_user, name);
+
+    // Check if repo already exists
+    if state.repos.get_repo(&full_name).is_ok() {
+        return Redirect::to("/-/new?error=Repository+already+exists").into_response();
+    }
+
+    // Create the repository
+    let _ = state.repos.get_or_create_repo(&full_name);
+
+    // Redirect to the new repo
+    Redirect::to(&format!("/{}", full_name)).into_response()
 }

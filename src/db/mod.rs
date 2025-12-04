@@ -25,18 +25,59 @@ pub async fn init_database(db_path: &Path) -> Result<DatabaseConnection, DbErr> 
 
 /// Create all tables if they don't exist
 async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
-    // Users table
+    // Users table (also used for organizations with is_org=1)
     db.execute(Statement::from_string(
         db.get_database_backend(),
         r#"
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL DEFAULT '',
             display_name TEXT,
             email TEXT,
+            is_org INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL
         )
         "#.to_string(),
+    )).await?;
+
+    // Migration: Add password_hash column if it doesn't exist (for older DBs)
+    let _ = db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''"#.to_string(),
+    )).await;
+
+    // Migration: Add is_org column if it doesn't exist (for older DBs)
+    let _ = db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"ALTER TABLE users ADD COLUMN is_org INTEGER NOT NULL DEFAULT 0"#.to_string(),
+    )).await;
+
+    // Organization members table (links users to orgs)
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"
+        CREATE TABLE IF NOT EXISTS org_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            org_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (org_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            UNIQUE(org_id, user_id)
+        )
+        "#.to_string(),
+    )).await?;
+
+    // Create indexes for org member lookups
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_org_members_org ON org_members(org_id)"#.to_string(),
+    )).await?;
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_org_members_user ON org_members(user_id)"#.to_string(),
     )).await?;
 
     // Repositories table

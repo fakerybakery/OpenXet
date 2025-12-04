@@ -1,12 +1,46 @@
 {% extends "base.html" %}
 {% block title %}OpenXet{% endblock %}
 {% block content %}
-<h2 style="margin-bottom: 12px;">Dashboard</h2>
+<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+    <h2 style="margin: 0;">Dashboard</h2>
+    {% if current_user %}
+    <a href="/-/new" class="btn btn-primary">+ New Repository</a>
+    {% endif %}
+</div>
+
+<!-- Storage Stats -->
+<div class="card" style="margin-bottom: 12px; background: linear-gradient(135deg, #1a2a3d 0%, #222 100%);">
+    <div style="padding: 16px;">
+        <div style="display: flex; gap: 24px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 120px;">
+                <div style="font-size: 11px; color: #7ab3ff; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Total Uploaded</div>
+                <div style="font-size: 24px; font-weight: 600; color: #e0e0e0;">{{ total_uploaded }}</div>
+            </div>
+            <div style="flex: 1; min-width: 120px;">
+                <div style="font-size: 11px; color: #5c5; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Actually Stored</div>
+                <div style="font-size: 24px; font-weight: 600; color: #e0e0e0;">{{ total_stored }}</div>
+            </div>
+            <div style="flex: 1; min-width: 120px;">
+                <div style="font-size: 11px; color: #f78166; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Space Saved</div>
+                <div style="font-size: 24px; font-weight: 600; color: #5c5;">{{ savings }}</div>
+                <div style="font-size: 11px; color: #999;">{{ savings_percent }}% reduction</div>
+            </div>
+            <div style="flex: 1; min-width: 120px;">
+                <div style="font-size: 11px; color: #cc5; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Dedup Ratio</div>
+                <div style="font-size: 24px; font-weight: 600; color: #e0e0e0;">{{ dedup_ratio }}</div>
+            </div>
+        </div>
+    </div>
+</div>
 
 <div class="flex gap-3 mb-2">
     <div class="card" style="flex: 1; padding: 12px;">
         <div style="font-size: 24px; font-weight: 600;">{{ repo_count }}</div>
         <div class="text-muted text-sm">Repositories</div>
+    </div>
+    <div class="card" style="flex: 1; padding: 12px;">
+        <div style="font-size: 24px; font-weight: 600;">{{ lfs_object_count }}</div>
+        <div class="text-muted text-sm">LFS Objects</div>
     </div>
     <div class="card" style="flex: 1; padding: 12px;">
         <div style="font-size: 24px; font-weight: 600;">{{ block_count }}</div>
@@ -18,19 +52,12 @@
     </div>
 </div>
 
-<div class="card">
-    <div class="card-header">Quick Start</div>
-    <div style="padding: 12px;">
-        <p class="text-muted mb-2">Clone a repository:</p>
-        <code>git clone http://localhost:8080/owner/repo.git</code>
-        <p class="text-muted mb-2 mt-3">Create a new repository:</p>
-        <code>git push http://localhost:8080/myuser/my-repo.git main</code>
-    </div>
-</div>
-
 {% if repos %}
 <div class="card">
-    <div class="card-header">Repositories</div>
+    <div class="card-header" style="display: flex; align-items: center; justify-content: space-between;">
+        <span>Repositories</span>
+        <span class="badge">{{ repo_count }}</span>
+    </div>
     <ul class="list">
         {% for repo in repos %}
         <li class="list-item">
@@ -40,5 +67,27 @@
         {% endfor %}
     </ul>
 </div>
+{% else %}
+<div class="card">
+    <div class="empty">
+        <p style="margin-bottom: 12px;">No repositories yet</p>
+        {% if current_user %}
+        <a href="/-/new" class="btn btn-primary">Create your first repository</a>
+        {% else %}
+        <p class="text-muted text-sm">Sign in to create a repository, or push directly:</p>
+        <code style="display: block; margin-top: 8px;">git push http://localhost:8080/username/repo.git main</code>
+        {% endif %}
+    </div>
+</div>
 {% endif %}
+
+<div class="card">
+    <div class="card-header">Quick Start</div>
+    <div style="padding: 12px;">
+        <p class="text-muted mb-2">Clone a repository:</p>
+        <code>git clone http://localhost:8080/owner/repo.git</code>
+        <p class="text-muted mb-2 mt-3">Push to create a new repository:</p>
+        <code>git push http://localhost:8080/{% if current_user %}{{ current_user }}{% else %}myuser{% endif %}/my-model.git main</code>
+    </div>
+</div>
 {% endblock %}

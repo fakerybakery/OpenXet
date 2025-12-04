@@ -4,7 +4,7 @@ mod db;
 mod error;
 mod git;
 mod storage;
-mod web_ui; // Optional: remove this line to disable web UI
+mod web_ui;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -18,7 +18,7 @@ use axum::{
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use api::{AppState, Permissions, User};
+use api::AppState;
 
 #[tokio::main]
 async fn main() {
@@ -51,36 +51,35 @@ async fn main() {
             .expect("Failed to create application state")
     );
 
-    // Add default admin user (in production, load from config/env)
-    state.auth.add_user(
-        User::new("admin".to_string(), "admin")
-            .with_global_permissions(Permissions::admin()),
-    );
+    // Ensure default admin user exists (for bootstrapping)
+    state.auth.ensure_admin_user("admin", "admin")
+        .await
+        .expect("Failed to create admin user");
 
-    // Add a demo user with read-only access
-    state.auth.add_user(
-        User::new("demo".to_string(), "demo")
-            .with_global_permissions(Permissions::read_only()),
-    );
-
-    // Create a sample repository if none exist
-    if state.repos.list_repos().is_empty() {
-        let _ = state.repos.create_repo("demo/sample");
-        tracing::info!("Sample repository 'demo/sample' created");
+    // Log repository count
+    let repo_count = state.repos.list_repos().len();
+    if repo_count == 0 {
+        tracing::info!("No repositories found. Users can create repos under their username.");
     } else {
-        tracing::info!("Loaded {} repositories from database", state.repos.list_repos().len());
+        tracing::info!("Loaded {} repositories from database", repo_count);
     }
 
     // Build router with explicit routes
-    // Git/LFS routes use patterns that include ".git" or specific paths
-    // Web UI routes use /:owner/:repo patterns for browsing
     let app = Router::new()
         // API endpoints (explicit /api prefix)
         .route("/api/repos", get(api::list_repos))
         .route("/api/repos/:owner/:repo", post(api::create_repo))
         .route("/api/repos/:owner/:repo", delete(api::delete_repo))
         .route("/api/repos/:owner/:repo/refs", get(api::list_refs))
+        // Auth endpoints
+        .route("/api/auth/register", post(api::register))
         .route("/api/auth/login", post(api::login))
+        // Organization endpoints
+        .route("/api/orgs", post(api::create_org))
+        .route("/api/orgs/:org/members", get(api::get_org_members))
+        .route("/api/orgs/:org/members", post(api::add_org_member))
+        .route("/api/orgs/:org/members/:username", delete(api::remove_org_member))
+        // Stats
         .route("/api/cas/stats", get(api::cas_stats))
         // Health check
         .route("/health", get(api::health))
@@ -98,11 +97,15 @@ async fn main() {
     // Start server
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
     tracing::info!("Git-Xet Server starting on http://{}", addr);
-    tracing::info!("Default credentials: admin/admin (full access), demo/demo (read-only)");
+    tracing::info!("Default admin: admin/admin");
     tracing::info!("");
-    tracing::info!("Usage:");
-    tracing::info!("  Clone: git clone http://admin:admin@localhost:8080/demo/sample.git");
-    tracing::info!("  Push:  git push http://admin:admin@localhost:8080/demo/sample.git main");
+    tracing::info!("API Endpoints:");
+    tracing::info!("  POST /api/auth/register - Register new user");
+    tracing::info!("  POST /api/auth/login    - Login and get token");
+    tracing::info!("  POST /api/orgs          - Create organization");
+    tracing::info!("");
+    tracing::info!("Users can push to repos under their username (e.g., alice/my-model)");
+    tracing::info!("Org members can push to org repos (e.g., my-org/shared-model)");
     tracing::info!("");
     tracing::info!("Web UI: http://{}/", addr);
 

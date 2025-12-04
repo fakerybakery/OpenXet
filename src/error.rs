@@ -6,6 +6,9 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum ServerError {
+    #[error("Not found")]
+    NotFound,
+
     #[error("Repository not found: {0}")]
     RepoNotFound(String),
 
@@ -46,6 +49,7 @@ pub enum ServerError {
 impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
+            ServerError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
             ServerError::RepoNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             ServerError::RepoAlreadyExists(_) => (StatusCode::CONFLICT, self.to_string()),
             ServerError::InvalidRef(_) => (StatusCode::BAD_REQUEST, self.to_string()),

@@ -12,6 +12,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use bytes::Bytes;
 
 use super::types::*;
+use crate::api::auth::Token;
 use crate::api::AppState;
 use crate::git::ObjectType;
 
@@ -64,14 +65,66 @@ fn json_response<T: serde::Serialize>(status: StatusCode, body: &T) -> Response 
     }
 }
 
+/// Error response helper for HF API format
+fn error_response(status: StatusCode, message: &str) -> Response {
+    let body = serde_json::json!({ "error": message });
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// Extract and validate auth token from headers (Bearer token)
+/// Returns the authenticated Token if valid, or None
+async fn extract_auth(state: &AppState, headers: &HeaderMap) -> Option<Token> {
+    // Check Authorization header (Bearer token)
+    if let Some(auth_header) = headers.get(header::AUTHORIZATION) {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if let Ok(token) = state.auth.validate_bearer(auth_str).await {
+                return Some(token);
+            }
+        }
+    }
+    None
+}
+
+/// Check if user can write to a repo (owns it or is org member)
+async fn check_write_permission(state: &AppState, token: Option<&Token>, repo_owner: &str) -> bool {
+    match state.auth.can_write_to_repo(token, repo_owner).await {
+        Ok(can_write) => can_write,
+        Err(_) => false,
+    }
+}
+
 // ============================================================================
 // Authentication Handlers
 // ============================================================================
 
 /// GET /api/whoami-v2 - Return current user info
-pub async fn whoami() -> Response {
-    // Accept any token, return anonymous user info
-    json_response(StatusCode::OK, &WhoamiResponse::default())
+pub async fn whoami(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    // Try to authenticate
+    if let Some(token) = extract_auth(&state, &headers).await {
+        // Return authenticated user info
+        let response = WhoamiResponse {
+            user_type: "user".to_string(),
+            id: format!("user-{}", token.user_id),
+            name: token.username.clone(),
+            fullname: token.username.clone(),
+            email: format!("{}@localhost", token.username),
+            email_verified: true,
+            can_pay: false,
+            is_pro: false,
+            orgs: vec![],
+        };
+        json_response(StatusCode::OK, &response)
+    } else {
+        // Return anonymous user info (for unauthenticated requests)
+        json_response(StatusCode::OK, &WhoamiResponse::default())
+    }
 }
 
 // ============================================================================
@@ -84,7 +137,23 @@ pub async fn create_repo(
     headers: HeaderMap,
     axum::Json(req): axum::Json<CreateRepoRequest>,
 ) -> Response {
-    let owner = req.organization.as_deref().unwrap_or("anonymous");
+    // Require authentication
+    let token = match extract_auth(&state, &headers).await {
+        Some(t) => t,
+        None => return error_response(StatusCode::UNAUTHORIZED, "Authentication required"),
+    };
+
+    // Determine owner: organization if provided, otherwise use the authenticated user
+    let owner = req.organization.as_deref().unwrap_or(&token.username);
+
+    // Check write permission
+    if !check_write_permission(&state, Some(&token), owner).await {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            &format!("You don't have permission to create repos under '{}'", owner),
+        );
+    }
+
     let repo_name = format!("{}/{}", owner, req.name);
     let repo_type = req.repo_type.as_deref().unwrap_or("model");
 
@@ -112,8 +181,11 @@ pub async fn repo_info(
 ) -> Response {
     let repo_name = normalize_repo_path(&owner, &repo);
 
-    // Check if repo exists, create if not
-    let repo_handle = state.repos.get_or_create_repo(&repo_name);
+    // Check if repo exists (don't auto-create on read!)
+    let repo_handle = match state.repos.get_repo(&repo_name) {
+        Ok(r) => r,
+        Err(_) => return error_response(StatusCode::NOT_FOUND, &format!("Repository '{}' not found", repo_name)),
+    };
 
     // Get HEAD commit SHA
     let sha = repo_handle
@@ -456,6 +528,20 @@ pub async fn commit(
 ) -> Response {
     let repo_name = normalize_repo_path(&owner, &repo);
     let base_url = get_base_url(&headers);
+
+    // Require authentication for commits
+    let token = match extract_auth(&state, &headers).await {
+        Some(t) => t,
+        None => return error_response(StatusCode::UNAUTHORIZED, "Authentication required"),
+    };
+
+    // Check write permission
+    if !check_write_permission(&state, Some(&token), &owner).await {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            &format!("You don't have permission to push to '{}'", repo_name),
+        );
+    }
 
     // Parse NDJSON body
     let body_str = match std::str::from_utf8(&body) {

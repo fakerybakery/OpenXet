@@ -155,14 +155,14 @@ fn verify_signature(oid: &str, operation: &str, params: &LfsUrlParams) -> bool {
     true
 }
 
-/// Extract auth token from headers
-fn extract_auth(headers: &HeaderMap, auth: &AuthManager) -> Option<Token> {
+/// Extract auth token from headers (async)
+async fn extract_auth(headers: &HeaderMap, auth: &AuthManager) -> Option<Token> {
     if let Some(auth_header) = headers.get(header::AUTHORIZATION) {
         if let Ok(auth_str) = auth_header.to_str() {
             if auth_str.starts_with("Basic ") {
-                return auth.authenticate_basic(auth_str).ok();
+                return auth.authenticate_basic(auth_str).await.ok();
             } else if auth_str.starts_with("Bearer ") {
-                return auth.validate_bearer(auth_str).ok();
+                return auth.validate_bearer(auth_str).await.ok();
             }
         }
     }
@@ -178,7 +178,7 @@ pub async fn lfs_batch(
 ) -> Response {
     let repo_name_raw = repo.trim_end_matches(".git");
     let repo_name = format!("{}/{}", owner, repo_name_raw);
-    let token = extract_auth(&headers, &state.auth);
+    let token = extract_auth(&headers, &state.auth).await;
 
     tracing::debug!(
         "LFS batch request: repo={} op={} objects={}",
@@ -189,7 +189,7 @@ pub async fn lfs_batch(
 
     // Check permissions
     let needs_write = request.operation == "upload";
-    if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, needs_write) {
+    if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, needs_write).await {
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")
@@ -389,8 +389,8 @@ pub async fn lfs_upload(
     // Verify signed URL
     if !verify_signature(&oid, "upload", &params) {
         // Fall back to header-based auth if no valid signature
-        let token = extract_auth(&headers, &state.auth);
-        if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, true) {
+        let token = extract_auth(&headers, &state.auth).await;
+        if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, true).await {
             return Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
                 .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")
@@ -596,8 +596,8 @@ pub async fn lfs_download(
     // Verify signed URL
     if !verify_signature(&oid, "download", &params) {
         // Fall back to header-based auth if no valid signature
-        let token = extract_auth(&headers, &state.auth);
-        if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false) {
+        let token = extract_auth(&headers, &state.auth).await;
+        if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false).await {
             return Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
                 .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")
@@ -712,12 +712,12 @@ pub async fn lfs_verify(
 ) -> Response {
     let repo_name_raw = repo.trim_end_matches(".git");
     let repo_name = format!("{}/{}", owner, repo_name_raw);
-    let token = extract_auth(&headers, &state.auth);
+    let token = extract_auth(&headers, &state.auth).await;
 
     tracing::debug!("LFS verify: repo={} oid={} size={}", repo_name, obj.oid, obj.size);
 
     // Check permission
-    if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false) {
+    if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false).await {
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")
@@ -771,8 +771,8 @@ pub async fn lfs_verify_signed(
     // Verify signed URL
     if !verify_signature(&oid, "verify", &params) {
         // Fall back to header-based auth if no valid signature
-        let token = extract_auth(&headers, &state.auth);
-        if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false) {
+        let token = extract_auth(&headers, &state.auth).await;
+        if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false).await {
             return Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
                 .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")

@@ -1,4 +1,4 @@
-//! User entity
+//! User entity (also represents organizations when is_org=true)
 
 use sea_orm::entity::prelude::*;
 
@@ -9,8 +9,10 @@ pub struct Model {
     pub id: i32,
     #[sea_orm(unique)]
     pub username: String,
+    pub password_hash: String,
     pub display_name: Option<String>,
     pub email: Option<String>,
+    pub is_org: bool,
     pub created_at: i64,
 }
 

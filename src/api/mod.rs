@@ -6,10 +6,11 @@ pub mod lfs;
 use std::sync::Arc;
 use axum::{routing::{get, post}, Router};
 
-pub use auth::{Permissions, User};
+pub use auth::{AuthManager, Token};
 pub use handlers::{
     AppState, cas_stats, create_repo, delete_repo, health, list_refs, list_repos, login,
     git_info_refs, git_upload_pack, git_receive_pack,
+    register, create_org, add_org_member, remove_org_member, get_org_members,
 };
 pub use lfs::{lfs_batch, lfs_download, lfs_upload, lfs_verify, lfs_verify_signed};
 pub use hf_api::router as hf_router;

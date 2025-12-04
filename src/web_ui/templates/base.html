@@ -169,13 +169,36 @@
         .justify-between { justify-content: space-between; }
         .gap-2 { gap: 8px; }
         .gap-3 { gap: 12px; }
+
+        .edit-input {
+            padding: 8px 10px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 3px;
+            color: #e0e0e0;
+            font-size: 13px;
+            box-sizing: border-box;
+        }
+        .edit-input:focus {
+            outline: none;
+            border-color: #2563eb;
+        }
     </style>
 </head>
 <body>
     <header class="header">
         <a href="/" class="logo">OpenXet</a>
-        <nav class="nav">
-            <a href="/ui/repos">Repositories</a>
+        <nav class="nav" style="flex: 1;">
+            <a href="/">Explore</a>
+        </nav>
+        <nav class="nav" style="align-items: center;">
+            {% if current_user %}
+            <span style="color: #999; font-size: 12px;">{{ current_user }}</span>
+            <a href="/-/logout" class="btn" style="color: #e0e0e0;">Sign out</a>
+            {% else %}
+            <a href="/-/login" class="btn" style="color: #e0e0e0;">Sign in</a>
+            <a href="/-/signup" class="btn btn-primary">Sign up</a>
+            {% endif %}
         </nav>
     </header>
     <div class="container">
