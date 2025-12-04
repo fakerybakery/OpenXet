@@ -6,19 +6,27 @@
 #![allow(dead_code)] // Some fields are part of the LFS protocol but not used internally
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::Response,
     Json,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::auth::{AuthManager, Token};
 use super::handlers::AppState;
 use crate::cas::ContentHash;
+
+/// Secret key for signing LFS URLs (in production, load from config)
+const LFS_URL_SECRET: &[u8] = b"openxet-lfs-url-signing-secret-change-in-prod";
+
+/// URL signature validity in seconds
+const LFS_URL_EXPIRY_SECS: u64 = 3600;
 
 /// LFS Batch Request
 #[derive(Debug, Deserialize)]
@@ -85,6 +93,66 @@ pub struct ActionSpec {
 pub struct ObjectError {
     pub code: u16,
     pub message: String,
+}
+
+/// Query parameters for signed LFS URLs
+#[derive(Debug, Deserialize)]
+pub struct LfsUrlParams {
+    /// Expiry timestamp (Unix epoch seconds)
+    pub expires: Option<u64>,
+    /// HMAC signature
+    pub sig: Option<String>,
+}
+
+/// Generate a signed URL for LFS operations
+fn sign_lfs_url(base_url: &str, oid: &str, operation: &str) -> String {
+    let expires = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + LFS_URL_EXPIRY_SECS;
+
+    let sig = generate_signature(oid, operation, expires);
+    format!("{}?expires={}&sig={}", base_url, expires, sig)
+}
+
+/// Generate HMAC signature for URL validation
+fn generate_signature(oid: &str, operation: &str, expires: u64) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(LFS_URL_SECRET);
+    hasher.update(oid.as_bytes());
+    hasher.update(operation.as_bytes());
+    hasher.update(expires.to_le_bytes());
+    let result = hasher.finalize();
+    // Use first 16 bytes, hex encoded (32 chars)
+    result[..16].iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Verify a signed URL
+fn verify_signature(oid: &str, operation: &str, params: &LfsUrlParams) -> bool {
+    let (expires, sig) = match (&params.expires, &params.sig) {
+        (Some(e), Some(s)) => (*e, s.as_str()),
+        _ => return false,
+    };
+
+    // Check expiry
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    if now > expires {
+        tracing::debug!("LFS URL signature expired: now={} expires={}", now, expires);
+        return false;
+    }
+
+    // Verify signature
+    let expected = generate_signature(oid, operation, expires);
+    if sig != expected {
+        tracing::debug!("LFS URL signature mismatch");
+        return false;
+    }
+
+    true
 }
 
 /// Extract auth token from headers
@@ -199,20 +267,22 @@ fn process_download_object(
     host: &str,
     scheme: &str,
     repo: &str,
-    auth_header: &Option<String>,
+    _auth_header: &Option<String>,
 ) -> ObjectResponse {
     // Check if we have this object in CAS
     if let Some(hash) = ContentHash::from_hex(&obj.oid) {
         if state.cas.has_lfs_object(&hash) {
+            let base_url = format!("{}://{}/{}.git/info/lfs/objects/{}", scheme, host, repo, obj.oid);
+            let signed_url = sign_lfs_url(&base_url, &obj.oid, "download");
             return ObjectResponse {
                 oid: obj.oid.clone(),
                 size: obj.size,
                 authenticated: Some(true),
                 actions: Some(ObjectActions {
                     download: Some(ActionSpec {
-                        href: format!("{}://{}/{}.git/info/lfs/objects/{}", scheme, host, repo, obj.oid),
-                        header: build_auth_headers(auth_header),
-                        expires_in: Some(3600),
+                        href: signed_url,
+                        header: None, // No headers needed - URL is signed
+                        expires_in: Some(LFS_URL_EXPIRY_SECS),
                     }),
                     upload: None,
                     verify: None,
@@ -242,7 +312,7 @@ fn process_upload_object(
     host: &str,
     scheme: &str,
     repo: &str,
-    auth_header: &Option<String>,
+    _auth_header: &Option<String>,
 ) -> ObjectResponse {
     // Check if we already have this object
     if let Some(hash) = ContentHash::from_hex(&obj.oid) {
@@ -258,6 +328,13 @@ fn process_upload_object(
         }
     }
 
+    // Generate signed URLs for upload and verify
+    let upload_base = format!("{}://{}/{}.git/info/lfs/objects/{}", scheme, host, repo, obj.oid);
+    let upload_url = sign_lfs_url(&upload_base, &obj.oid, "upload");
+
+    let verify_base = format!("{}://{}/{}.git/info/lfs/verify/{}", scheme, host, repo, obj.oid);
+    let verify_url = sign_lfs_url(&verify_base, &obj.oid, "verify");
+
     // Need upload
     ObjectResponse {
         oid: obj.oid.clone(),
@@ -266,14 +343,14 @@ fn process_upload_object(
         actions: Some(ObjectActions {
             download: None,
             upload: Some(ActionSpec {
-                href: format!("{}://{}/{}.git/info/lfs/objects/{}", scheme, host, repo, obj.oid),
-                header: build_auth_headers(auth_header),
-                expires_in: Some(3600),
+                href: upload_url,
+                header: None, // No headers needed - URL is signed
+                expires_in: Some(LFS_URL_EXPIRY_SECS),
             }),
             verify: Some(ActionSpec {
-                href: format!("{}://{}/{}.git/info/lfs/verify", scheme, host, repo),
-                header: build_auth_headers(auth_header),
-                expires_in: Some(3600),
+                href: verify_url,
+                header: None, // No headers needed - URL is signed
+                expires_in: Some(LFS_URL_EXPIRY_SECS),
             }),
         }),
         error: None,
@@ -285,15 +362,17 @@ fn process_upload_object(
 /// This handler streams the upload directly to disk without loading
 /// the entire file into memory. Hash verification happens during streaming.
 /// After the raw file is written, it's queued for background chunking/dedup.
+///
+/// Authentication is via signed URL (query params `expires` and `sig`).
 pub async fn lfs_upload(
     State(state): State<Arc<AppState>>,
     Path((owner, repo, oid)): Path<(String, String, String)>,
+    Query(params): Query<LfsUrlParams>,
     headers: HeaderMap,
     request: axum::extract::Request,
 ) -> Response {
     let repo_name_raw = repo.trim_end_matches(".git");
     let repo_name = format!("{}/{}", owner, repo_name_raw);
-    let token = extract_auth(&headers, &state.auth);
 
     // Get content-length if available (for logging)
     let content_length = headers
@@ -307,13 +386,17 @@ pub async fn lfs_upload(
         repo_name, oid, content_length
     );
 
-    // Check write permission
-    if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, true) {
-        return Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")
-            .body(Body::from(e.to_string()))
-            .unwrap();
+    // Verify signed URL
+    if !verify_signature(&oid, "upload", &params) {
+        // Fall back to header-based auth if no valid signature
+        let token = extract_auth(&headers, &state.auth);
+        if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, true) {
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")
+                .body(Body::from(e.to_string()))
+                .unwrap();
+        }
     }
 
     // Parse the expected OID
@@ -336,53 +419,71 @@ pub async fn lfs_upload(
     // Get raw file path
     let raw_path = state.cas.raw_object_path(&expected_hash);
 
-    // Stream body to file while computing hash
+    // Stream body to file FAST (no hashing during upload)
     let body_stream = request.into_body();
 
-    match stream_to_file_with_hash(body_stream, &raw_path).await {
-        Ok((computed_hash, total_size)) => {
-            // Verify hash matches
-            if computed_hash != expected_hash {
-                // Clean up the file
-                let _ = tokio::fs::remove_file(&raw_path).await;
-
-                tracing::warn!(
-                    "OID mismatch: expected {}, got {}",
-                    expected_hash.to_hex(),
-                    computed_hash.to_hex()
-                );
-                return Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .header(header::CONTENT_TYPE, "application/vnd.git-lfs+json")
-                    .body(Body::from(
-                        serde_json::json!({
-                            "message": format!(
-                                "OID mismatch: expected {}, got {}",
-                                expected_hash.to_hex(),
-                                computed_hash.to_hex()
-                            )
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap();
-            }
-
-            // Register with CAS
-            state.cas.register_raw_object(expected_hash, total_size, raw_path);
-
-            // Queue for background chunking/deduplication
-            state.queue_for_processing(expected_hash);
-
+    match stream_to_file_fast(body_stream, &raw_path).await {
+        Ok(total_size) => {
             tracing::info!(
-                "LFS object stored raw (streaming): oid={} size={} - queued for background processing",
+                "LFS upload received: oid={} size={} - verifying hash...",
                 oid,
                 total_size
             );
 
-            Response::builder()
-                .status(StatusCode::OK)
-                .body(Body::empty())
-                .unwrap()
+            // Verify hash in blocking thread pool (doesn't block async runtime)
+            match hash_file_blocking(raw_path.clone()).await {
+                Ok(computed_hash) => {
+                    if computed_hash != expected_hash {
+                        // Clean up the file
+                        let _ = tokio::fs::remove_file(&raw_path).await;
+
+                        tracing::warn!(
+                            "OID mismatch: expected {}, got {}",
+                            expected_hash.to_hex(),
+                            computed_hash.to_hex()
+                        );
+                        return Response::builder()
+                            .status(StatusCode::BAD_REQUEST)
+                            .header(header::CONTENT_TYPE, "application/vnd.git-lfs+json")
+                            .body(Body::from(
+                                serde_json::json!({
+                                    "message": format!(
+                                        "OID mismatch: expected {}, got {}",
+                                        expected_hash.to_hex(),
+                                        computed_hash.to_hex()
+                                    )
+                                })
+                                .to_string(),
+                            ))
+                            .unwrap();
+                    }
+
+                    // Register with CAS
+                    state.cas.register_raw_object(expected_hash, total_size, raw_path);
+
+                    // Queue for background chunking/deduplication
+                    state.queue_for_processing(expected_hash);
+
+                    tracing::info!(
+                        "LFS object stored: oid={} size={} - queued for background processing",
+                        oid,
+                        total_size
+                    );
+
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Body::empty())
+                        .unwrap()
+                }
+                Err(e) => {
+                    let _ = tokio::fs::remove_file(&raw_path).await;
+                    tracing::error!("Hash verification failed: {}", e);
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::from(format!("Hash verification failed: {}", e)))
+                        .unwrap()
+                }
+            }
         }
         Err(e) => {
             // Clean up partial file
@@ -403,14 +504,13 @@ pub async fn lfs_upload(
     }
 }
 
-/// Stream request body to file while computing SHA-256 hash
-/// Returns (computed_hash, total_bytes_written)
-async fn stream_to_file_with_hash(
+/// Stream request body to file (no hashing - maximum speed)
+/// Returns total_bytes_written
+async fn stream_to_file_fast(
     body: axum::body::Body,
     path: &std::path::Path,
-) -> Result<(ContentHash, u64), String> {
+) -> Result<u64, String> {
     use futures::StreamExt;
-    use sha2::{Sha256, Digest};
     use tokio::io::AsyncWriteExt;
 
     // Create parent directory if needed
@@ -424,19 +524,13 @@ async fn stream_to_file_with_hash(
         .await
         .map_err(|e| format!("Failed to create file: {}", e))?;
 
-    let mut hasher = Sha256::new();
     let mut total_written = 0u64;
-
     let mut stream = http_body_util::BodyStream::new(body);
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| format!("Error reading body: {}", e))?;
         let data = chunk.into_data().map_err(|_| "Failed to get frame data")?;
 
-        // Update hash
-        hasher.update(&data);
-
-        // Write to file
         file.write_all(&data)
             .await
             .map_err(|e| format!("Failed to write to file: {}", e))?;
@@ -444,40 +538,72 @@ async fn stream_to_file_with_hash(
         total_written += data.len() as u64;
     }
 
-    file.sync_all()
+    file.flush()
         .await
-        .map_err(|e| format!("Failed to sync file: {}", e))?;
+        .map_err(|e| format!("Failed to flush file: {}", e))?;
 
-    // Compute final hash
-    let result = hasher.finalize();
-    let mut hash_bytes = [0u8; 32];
-    hash_bytes.copy_from_slice(&result);
+    Ok(total_written)
+}
 
-    Ok((ContentHash::from_raw(hash_bytes), total_written))
+/// Hash a file in a blocking thread pool (doesn't block async runtime)
+async fn hash_file_blocking(path: std::path::PathBuf) -> Result<ContentHash, String> {
+    tokio::task::spawn_blocking(move || {
+        use sha2::{Sha256, Digest};
+        use std::io::Read;
+
+        let mut file = std::fs::File::open(&path)
+            .map_err(|e| format!("Failed to open file for hashing: {}", e))?;
+
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0u8; 8 * 1024 * 1024]; // 8MB read buffer
+
+        loop {
+            let n = file.read(&mut buffer)
+                .map_err(|e| format!("Failed to read file: {}", e))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buffer[..n]);
+        }
+
+        let result = hasher.finalize();
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes.copy_from_slice(&result);
+
+        Ok(ContentHash::from_raw(hash_bytes))
+    })
+    .await
+    .map_err(|e| format!("Hash task panicked: {}", e))?
 }
 
 /// GET /:owner/:repo/info/lfs/objects/:oid - Download LFS object (streaming)
 ///
 /// Streams the object from disk without loading it entirely into memory.
 /// Works with both raw (not yet chunked) and chunked objects.
+///
+/// Authentication is via signed URL (query params `expires` and `sig`).
 pub async fn lfs_download(
     State(state): State<Arc<AppState>>,
     Path((owner, repo, oid)): Path<(String, String, String)>,
+    Query(params): Query<LfsUrlParams>,
     headers: HeaderMap,
 ) -> Response {
     let repo_name_raw = repo.trim_end_matches(".git");
     let repo_name = format!("{}/{}", owner, repo_name_raw);
-    let token = extract_auth(&headers, &state.auth);
 
     tracing::debug!("LFS download (streaming): repo={} oid={}", repo_name, oid);
 
-    // Check read permission
-    if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false) {
-        return Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")
-            .body(Body::from(e.to_string()))
-            .unwrap();
+    // Verify signed URL
+    if !verify_signature(&oid, "download", &params) {
+        // Fall back to header-based auth if no valid signature
+        let token = extract_auth(&headers, &state.auth);
+        if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false) {
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")
+                .body(Body::from(e.to_string()))
+                .unwrap();
+        }
     }
 
     // Parse OID
@@ -597,6 +723,62 @@ pub async fn lfs_verify(
             .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")
             .body(Body::from(e.to_string()))
             .unwrap();
+    }
+
+    // Check if object exists
+    let hash = match ContentHash::from_hex(&obj.oid) {
+        Some(h) => h,
+        None => {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Body::from("Invalid OID"))
+                .unwrap();
+        }
+    };
+
+    if state.cas.has_lfs_object(&hash) {
+        Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap()
+    } else {
+        Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(header::CONTENT_TYPE, "application/vnd.git-lfs+json")
+            .body(Body::from(
+                serde_json::json!({
+                    "message": "Object not found"
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    }
+}
+
+/// POST /:owner/:repo/info/lfs/verify/:oid - Verify uploaded object (signed URL version)
+pub async fn lfs_verify_signed(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo, oid)): Path<(String, String, String)>,
+    Query(params): Query<LfsUrlParams>,
+    headers: HeaderMap,
+    Json(obj): Json<LfsObject>,
+) -> Response {
+    let repo_name_raw = repo.trim_end_matches(".git");
+    let repo_name = format!("{}/{}", owner, repo_name_raw);
+
+    tracing::debug!("LFS verify (signed): repo={} oid={} size={}", repo_name, obj.oid, obj.size);
+
+    // Verify signed URL
+    if !verify_signature(&oid, "verify", &params) {
+        // Fall back to header-based auth if no valid signature
+        let token = extract_auth(&headers, &state.auth);
+        if let Err(e) = state.auth.check_permission(token.as_ref(), &repo_name, false) {
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header(header::WWW_AUTHENTICATE, "Basic realm=\"Git LFS\"")
+                .body(Body::from(e.to_string()))
+                .unwrap();
+        }
     }
 
     // Check if object exists

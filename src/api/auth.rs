@@ -238,12 +238,25 @@ impl AuthManager {
     }
 
     /// Parse Bearer token header and validate
+    ///
+    /// Supports two formats:
+    /// 1. Standard Bearer token (looked up in token store)
+    /// 2. HuggingFace-style "username:password" format for direct auth
     pub fn validate_bearer(&self, auth_header: &str) -> Result<Token> {
         if !auth_header.starts_with("Bearer ") {
             return Err(ServerError::AuthFailed);
         }
 
         let token_str = &auth_header[7..];
+
+        // First, check if it's a "username:password" format (HuggingFace style)
+        if let Some(colon_idx) = token_str.find(':') {
+            let username = &token_str[..colon_idx];
+            let password = &token_str[colon_idx + 1..];
+            return self.authenticate(username, password);
+        }
+
+        // Otherwise, look up in token store
         self.validate_token(token_str)
     }
 
