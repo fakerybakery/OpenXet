@@ -12,6 +12,7 @@ pub mod cas_block;
 pub mod file_segment;
 pub mod discussion;
 pub mod discussion_comment;
+pub mod discussion_event;
 
 // Re-export entities for convenient access (may not all be used yet)
 #[allow(unused_imports)]
@@ -38,3 +39,5 @@ pub use file_segment::Entity as FileSegment;
 pub use discussion::Entity as Discussion;
 #[allow(unused_imports)]
 pub use discussion_comment::Entity as DiscussionComment;
+#[allow(unused_imports)]
+pub use discussion_event::Entity as DiscussionEvent;

@@ -287,6 +287,30 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
         r#"CREATE INDEX IF NOT EXISTS idx_comments_discussion ON discussion_comments(discussion_id)"#.to_string(),
     )).await?;
 
+    // Discussion events table (for tracking close/reopen/rename/lock activities)
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"
+        CREATE TABLE IF NOT EXISTS discussion_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discussion_id INTEGER NOT NULL,
+            actor_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            old_value TEXT,
+            new_value TEXT,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (discussion_id) REFERENCES discussions(id) ON DELETE CASCADE,
+            FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        "#.to_string(),
+    )).await?;
+
+    // Create index for event lookups
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_events_discussion ON discussion_events(discussion_id)"#.to_string(),
+    )).await?;
+
     tracing::info!("Database tables initialized");
     Ok(())
 }

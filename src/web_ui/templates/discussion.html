@@ -1,69 +1,104 @@
-{% extends "base.html" %}
+{% extends "repo_base.html" %}
 
 {% block title %}{{ discussion_title }} - {{ full_name }}{% endblock %}
 
-{% block content %}
-<div class="breadcrumb">
-    <a href="/">Home</a> / <a href="/{{ owner }}">{{ owner }}</a> / <a href="/{{ full_name }}">{{ repo_name }}</a> / <a href="/{{ full_name }}/discussions">Community</a>
+{% block breadcrumb_extra %} / <a href="/{{ full_name }}/discussions">Community</a>{% endblock %}
+
+{% block header_actions %}
+{% if current_user and current_user == owner %}
+<form method="POST" action="/{{ full_name }}/discussions/{{ discussion_id }}/{% if discussion_status == 'open' %}close{% else %}reopen{% endif %}" style="margin: 0;">
+    {% if discussion_status == "open" %}
+    <button type="submit" class="btn">Close</button>
+    {% else %}
+    <button type="submit" class="btn" style="background: #1a3d1a; border-color: #5c5; color: #5c5;">Reopen</button>
+    {% endif %}
+</form>
+{% endif %}
+<a href="/{{ full_name }}/discussions" class="btn">Back</a>
+{% endblock %}
+
+{% block repo_content %}
+<!-- Discussion Header -->
+<div style="margin-bottom: 16px;">
+    <div style="display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px;">
+        {% if discussion_status == "open" %}
+        <span class="badge badge-green" style="margin-top: 3px;">Open</span>
+        {% else %}
+        <span class="badge" style="background: #2d1f4a; color: #a371f7; margin-top: 3px;">Closed</span>
+        {% endif %}
+        <h2 style="margin: 0; font-size: 18px; font-weight: 600; color: #e0e0e0; line-height: 1.3;">{{ discussion_title }}</h2>
+    </div>
+    <div style="font-size: 12px; color: #666; margin-left: 52px;">
+        <span style="color: #999;">{{ discussion_author }}</span> started this discussion {{ discussion_created }}
+        &middot; {{ reply_count }} {% if reply_count == 1 %}reply{% else %}replies{% endif %}
+    </div>
 </div>
 
-<div class="flex items-center justify-between mb-2">
-    <h2 style="margin: 0;">{{ full_name }}</h2>
-</div>
-
-<div class="tabs">
-    <a href="/{{ full_name }}" class="tab">Files</a>
-    <a href="/{{ full_name }}/discussions" class="tab active">Community</a>
-</div>
-
-<!-- Discussion header -->
-<div class="card" style="margin-bottom: 12px;">
-    <div style="padding: 16px;">
-        <div style="display: flex; align-items: flex-start; gap: 12px;">
-            {% if discussion_status == "open" %}
-            <span class="badge badge-green" style="margin-top: 4px;">Open</span>
-            {% else %}
-            <span class="badge badge-purple" style="margin-top: 4px; background: #2d1f4a; color: #a371f7;">Closed</span>
+<!-- Thread -->
+<div style="display: flex; flex-direction: column; gap: 12px;">
+    {% for item in timeline %}
+    {% if item.item_type == "op" or item.item_type == "comment" %}
+    <!-- Comment -->
+    <div class="card" style="margin-bottom: 0;">
+        <div class="card-header" style="display: flex; align-items: center; gap: 8px;">
+            <div style="width: 24px; height: 24px; border-radius: 50%; background: {% if item.item_type == 'op' %}#1a3d1a{% else %}#333{% endif %}; display: flex; align-items: center; justify-content: center; font-size: 10px; color: {% if item.item_type == 'op' %}#5c5{% else %}#999{% endif %};">
+                {{ item.author | truncate(length=1, end="") | upper }}
+            </div>
+            <span style="font-weight: 500; color: #e0e0e0;">{{ item.author }}</span>
+            {% if item.item_type == "op" %}
+            <span class="badge badge-green" style="font-size: 9px; padding: 0 4px;">OP</span>
             {% endif %}
-            <div style="flex: 1;">
-                <h3 style="margin: 0 0 8px 0; font-size: 18px; color: #e0e0e0;">{{ discussion_title }}</h3>
-                <div style="font-size: 12px; color: #666;">
-                    <span style="color: #999;">{{ discussion_author }}</span> started this discussion {{ discussion_created }}
-                    &middot; {{ comment_count }} {% if comment_count == 1 %}comment{% else %}comments{% endif %}
-                </div>
-            </div>
+            <span style="color: #666; font-size: 11px;">{{ item.created_at }}</span>
         </div>
+        <div style="padding: 12px; color: #ccc; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word;">{{ item.content }}</div>
     </div>
-</div>
-
-<!-- Comments -->
-{% if comments %}
-<div class="card" style="margin-bottom: 12px;">
-    {% for comment in comments %}
-    <div style="padding: 12px 16px; border-bottom: 1px solid #333; {% if loop.last %}border-bottom: none;{% endif %}">
-        <div style="display: flex; align-items: flex-start; gap: 12px;">
-            <div style="width: 32px; height: 32px; border-radius: 50%; background: #333; display: flex; align-items: center; justify-content: center; color: #999; font-size: 12px; flex-shrink: 0;">
-                {{ comment.author | first | upper }}
-            </div>
-            <div style="flex: 1; min-width: 0;">
-                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                    <span style="font-weight: 500; color: #e0e0e0;">{{ comment.author }}</span>
-                    <span style="font-size: 11px; color: #666;">{{ comment.created_at }}</span>
-                </div>
-                <div style="color: #ccc; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word;">{{ comment.content }}</div>
-            </div>
-        </div>
+    {% elif item.item_type == "event" %}
+    <!-- Event -->
+    <div style="display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 12px; color: #666;">
+        {% if item.event_type == "closed" %}
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="#a371f7">
+            <path d="M11.28 6.78a.75.75 0 00-1.06-1.06L7.25 8.69 5.78 7.22a.75.75 0 00-1.06 1.06l2 2a.75.75 0 001.06 0l3.5-3.5z"/>
+            <path d="M16 8A8 8 0 110 8a8 8 0 0116 0zm-1.5 0a6.5 6.5 0 11-13 0 6.5 6.5 0 0113 0z"/>
+        </svg>
+        <span><strong style="color: #e0e0e0;">{{ item.author }}</strong> closed this discussion <span style="color: #555;">{{ item.created_at }}</span></span>
+        {% elif item.event_type == "reopened" %}
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="#5c5">
+            <path d="M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/>
+            <path d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z"/>
+        </svg>
+        <span><strong style="color: #e0e0e0;">{{ item.author }}</strong> reopened this discussion <span style="color: #555;">{{ item.created_at }}</span></span>
+        {% elif item.event_type == "renamed" %}
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="#999">
+            <path d="M11.93 1.56a1.05 1.05 0 011.48 0l1.03 1.03a1.05 1.05 0 010 1.48L5.67 12.84a1 1 0 01-.47.26l-2.9.73a.5.5 0 01-.6-.6l.73-2.9a1 1 0 01.26-.47L11.93 1.56z"/>
+        </svg>
+        <span><strong style="color: #e0e0e0;">{{ item.author }}</strong> changed the title from <s style="color: #f85149;">{{ item.old_value }}</s> to <strong style="color: #5c5;">{{ item.new_value }}</strong> <span style="color: #555;">{{ item.created_at }}</span></span>
+        {% elif item.event_type == "locked" %}
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="#f85149">
+            <path d="M4 4v2h-.25A1.75 1.75 0 002 7.75v5.5c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0014 13.25v-5.5A1.75 1.75 0 0012.25 6H12V4a4 4 0 10-8 0zm6.5 2V4a2.5 2.5 0 00-5 0v2h5z"/>
+        </svg>
+        <span><strong style="color: #e0e0e0;">{{ item.author }}</strong> locked this discussion <span style="color: #555;">{{ item.created_at }}</span></span>
+        {% elif item.event_type == "unlocked" %}
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="#5c5">
+            <path d="M5.5 4v2h7A1.75 1.75 0 0114.25 7.75v5.5c0 .966-.784 1.75-1.75 1.75h-8.5A1.75 1.75 0 012.25 13.25v-5.5A1.75 1.75 0 014 6h.5V4a4 4 0 018 0v.5a.75.75 0 01-1.5 0V4a2.5 2.5 0 00-5 0z"/>
+        </svg>
+        <span><strong style="color: #e0e0e0;">{{ item.author }}</strong> unlocked this discussion <span style="color: #555;">{{ item.created_at }}</span></span>
+        {% else %}
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="#999">
+            <circle cx="8" cy="8" r="6"/>
+        </svg>
+        <span><strong style="color: #e0e0e0;">{{ item.author }}</strong> {{ item.event_type }} <span style="color: #555;">{{ item.created_at }}</span></span>
+        {% endif %}
     </div>
+    {% endif %}
     {% endfor %}
 </div>
-{% endif %}
 
-<!-- Reply form -->
+<!-- Reply Form -->
 {% if current_user %}
-<div class="card">
-    <div class="card-header">Add a comment</div>
-    <form method="POST" action="/{{ full_name }}/discussions/{{ discussion_id }}" style="padding: 16px;">
-        <textarea name="content" placeholder="Leave a comment..." required
+<div class="card" style="margin-top: 16px;">
+    <div class="card-header">Reply</div>
+    <form method="POST" action="/{{ full_name }}/discussions/{{ discussion_id }}" style="padding: 12px;">
+        <textarea name="content" placeholder="Write a reply..." required
             class="edit-input" style="width: 100%; min-height: 100px; resize: vertical; margin-bottom: 12px;"></textarea>
         <div style="display: flex; justify-content: flex-end;">
             <button type="submit" class="btn btn-primary">Comment</button>
@@ -71,10 +106,11 @@
     </form>
 </div>
 {% else %}
-<div class="card">
-    <div class="empty" style="padding: 16px;">
+<div class="card" style="margin-top: 16px;">
+    <div class="empty" style="padding: 24px;">
+        <p style="margin-bottom: 12px; color: #666;">Join the conversation</p>
         <a href="/-/login" class="btn btn-primary">Sign in to comment</a>
     </div>
 </div>
 {% endif %}
-{% endblock %}
+{% endblock repo_content %}

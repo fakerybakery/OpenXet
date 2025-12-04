@@ -22,7 +22,13 @@
 </div>
 
 <div class="tabs">
-    {% set current_ref = current_branch | default(value=ref_name) | default(value='main') %}
+    {% if current_branch %}
+        {% set current_ref = current_branch %}
+    {% elif ref_name %}
+        {% set current_ref = ref_name %}
+    {% else %}
+        {% set current_ref = 'main' %}
+    {% endif %}
     {% set tab = active_tab | default(value='') %}
     <a href="/{{ full_name }}?tab=overview&branch={{ current_ref }}" class="tab {% if tab == 'overview' %}active{% endif %}">Overview</a>
     <a href="/{{ full_name }}?tab=files&branch={{ current_ref }}" class="tab {% if tab == 'files' %}active{% endif %}">Files</a>

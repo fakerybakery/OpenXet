@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tera::Context;
 
 use crate::api::AppState;
-use crate::db::entities::{discussion, discussion_comment, user};
+use crate::db::entities::{discussion, discussion_comment, discussion_event, org_member, user};
 use crate::git::{CommitInfo, ObjectId, ObjectType, Repository, TreeEntry};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set};
 use super::templates;
@@ -27,10 +27,14 @@ pub fn create_router() -> Router<Arc<AppState>> {
         .route("/-/logout", get(logout))
         // Repo management
         .route("/-/new", get(new_repo_page).post(create_repo))
+        // Org management
+        .route("/-/new-org", get(new_org_page).post(create_org))
         // Stats page
         .route("/-/stats", get(stats))
-        // User profile page (must come before /:owner/:repo)
+        // User/org profile page (must come before /:owner/:repo)
         .route("/:owner", get(user_profile))
+        .route("/:owner/members", axum::routing::post(add_org_member))
+        .route("/:owner/members/:username/remove", axum::routing::post(remove_org_member))
         // Repository routes (owner/repo format)
         .route("/:owner/:repo", get(repo_detail))
         .route("/:owner/:repo/tree/:ref", get(tree_root))
@@ -46,6 +50,8 @@ pub fn create_router() -> Router<Arc<AppState>> {
         .route("/:owner/:repo/discussions", get(discussions_list))
         .route("/:owner/:repo/discussions/new", get(new_discussion_page).post(create_discussion))
         .route("/:owner/:repo/discussions/:id", get(discussion_detail).post(post_comment))
+        .route("/:owner/:repo/discussions/:id/close", axum::routing::post(close_discussion))
+        .route("/:owner/:repo/discussions/:id/reopen", axum::routing::post(reopen_discussion))
 }
 
 /// Home page
@@ -84,28 +90,116 @@ async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respon
     render_template("index.html", &context)
 }
 
-/// User profile page - shows all repos owned by user
+/// Member info for templates
+#[derive(serde::Serialize)]
+struct MemberInfo {
+    username: String,
+    role: String,
+}
+
+/// Org info for templates
+#[derive(serde::Serialize)]
+struct OrgInfo {
+    name: String,
+    role: String,
+}
+
+/// User/org profile page - shows repos, and for orgs shows members, for users shows orgs
 async fn user_profile(
     State(state): State<Arc<AppState>>,
     Path(owner): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    // Get all repos and filter by owner
+    let db = match &state.db {
+        Some(db) => db,
+        None => return render_error("Database not available"),
+    };
+
+    // Try to find user/org in database
+    let owner_user = user::Entity::find()
+        .filter(user::Column::Username.eq(&owner))
+        .one(db.as_ref())
+        .await
+        .ok()
+        .flatten();
+
+    // Get all repos owned by this user/org
     let all_repos = state.repos.list_repos();
-    let user_repos: Vec<&String> = all_repos
+    let user_repos: Vec<String> = all_repos
         .iter()
         .filter(|r| r.starts_with(&format!("{}/", owner)))
+        .cloned()
         .collect();
 
-    // If no repos found for this owner, show 404
-    if user_repos.is_empty() {
-        return render_error(&format!("User '{}' not found", owner));
+    // If no user in DB and no repos, show 404
+    if owner_user.is_none() && user_repos.is_empty() {
+        return render_error(&format!("'{}' not found", owner));
     }
+
+    let is_org = owner_user.as_ref().map(|u| u.is_org).unwrap_or(false);
+    let current_user = get_current_user(&state, &headers).await;
 
     let mut context = Context::new();
     context.insert("owner", &owner);
     context.insert("repos", &user_repos);
     context.insert("repo_count", &user_repos.len());
+    context.insert("is_org", &is_org);
+
+    if is_org {
+        // Org page: show members
+        let owner_id = owner_user.as_ref().map(|u| u.id).unwrap_or(0);
+
+        let members = org_member::Entity::find()
+            .filter(org_member::Column::OrgId.eq(owner_id))
+            .all(db.as_ref())
+            .await
+            .unwrap_or_default();
+
+        let mut member_infos = Vec::new();
+        for member in &members {
+            if let Ok(Some(u)) = user::Entity::find_by_id(member.user_id).one(db.as_ref()).await {
+                member_infos.push(MemberInfo {
+                    username: u.username,
+                    role: member.role.clone(),
+                });
+            }
+        }
+
+        context.insert("members", &member_infos);
+        context.insert("member_count", &member_infos.len());
+
+        // Check if current user is org owner (can manage members)
+        let is_org_owner = if let Some(ref cu) = current_user {
+            member_infos.iter().any(|m| m.username == *cu && m.role == "owner")
+        } else {
+            false
+        };
+        context.insert("is_org_owner", &is_org_owner);
+    } else {
+        // User page: show orgs they belong to
+        if let Some(ref owner_user) = owner_user {
+            let memberships = org_member::Entity::find()
+                .filter(org_member::Column::UserId.eq(owner_user.id))
+                .all(db.as_ref())
+                .await
+                .unwrap_or_default();
+
+            let mut org_infos = Vec::new();
+            for membership in memberships {
+                if let Ok(Some(org)) = user::Entity::find_by_id(membership.org_id).one(db.as_ref()).await {
+                    if org.is_org {
+                        org_infos.push(OrgInfo {
+                            name: org.username,
+                            role: membership.role,
+                        });
+                    }
+                }
+            }
+
+            context.insert("orgs", &org_infos);
+            context.insert("org_count", &org_infos.len());
+        }
+    }
 
     add_user_to_context(&mut context, &state, &headers).await;
 
@@ -2052,6 +2146,312 @@ async fn create_repo(
 }
 
 // ============================================================================
+// Organization Handlers
+// ============================================================================
+
+/// Form for creating a new org
+#[derive(serde::Deserialize)]
+struct NewOrgForm {
+    name: String,
+}
+
+/// New organization page (GET)
+async fn new_org_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let mut context = Context::new();
+
+    // Check if user is logged in
+    let current_user = get_current_user(&state, &headers).await;
+    if current_user.is_none() {
+        return Redirect::to("/-/login?error=Please+sign+in+to+create+an+organization").into_response();
+    }
+
+    context.insert("current_user", &current_user);
+
+    if let Some(error) = query.get("error") {
+        context.insert("error", error);
+    }
+
+    render_template("new_org.html", &context)
+}
+
+/// Create organization (POST)
+async fn create_org(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<NewOrgForm>,
+) -> Response {
+    // Check if user is logged in
+    let current_user = match get_current_user(&state, &headers).await {
+        Some(u) => u,
+        None => return Redirect::to("/-/login?error=Please+sign+in+to+create+an+organization").into_response(),
+    };
+
+    let db = match &state.db {
+        Some(db) => db,
+        None => return render_error("Database not available"),
+    };
+
+    // Validate org name
+    let name = form.name.trim();
+    if name.is_empty() {
+        return Redirect::to("/-/new-org?error=Organization+name+cannot+be+empty").into_response();
+    }
+    if name.len() < 2 {
+        return Redirect::to("/-/new-org?error=Organization+name+must+be+at+least+2+characters").into_response();
+    }
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Redirect::to("/-/new-org?error=Organization+name+can+only+contain+letters,+numbers,+dashes,+and+underscores").into_response();
+    }
+
+    // Check if name is already taken (user or org)
+    let existing = user::Entity::find()
+        .filter(user::Column::Username.eq(name))
+        .one(db.as_ref())
+        .await;
+
+    if matches!(existing, Ok(Some(_))) {
+        return Redirect::to("/-/new-org?error=Name+is+already+taken").into_response();
+    }
+
+    // Get current user's ID
+    let creator = match user::Entity::find()
+        .filter(user::Column::Username.eq(&current_user))
+        .one(db.as_ref())
+        .await
+    {
+        Ok(Some(u)) => u,
+        _ => return render_error("User not found"),
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    // Create the organization (is_org = true)
+    let new_org = user::ActiveModel {
+        username: Set(name.to_string()),
+        password_hash: Set(String::new()), // Orgs don't have passwords
+        display_name: Set(Some(name.to_string())),
+        email: Set(None),
+        is_org: Set(true),
+        created_at: Set(now),
+        ..Default::default()
+    };
+
+    let org = match new_org.insert(db.as_ref()).await {
+        Ok(o) => o,
+        Err(e) => return render_error(&format!("Failed to create organization: {}", e)),
+    };
+
+    // Add creator as org owner
+    let membership = org_member::ActiveModel {
+        org_id: Set(org.id),
+        user_id: Set(creator.id),
+        role: Set("owner".to_string()),
+        created_at: Set(now),
+        ..Default::default()
+    };
+
+    if let Err(e) = membership.insert(db.as_ref()).await {
+        return render_error(&format!("Failed to add owner to organization: {}", e));
+    }
+
+    // Redirect to the new org
+    Redirect::to(&format!("/{}", name)).into_response()
+}
+
+/// Form for adding a member
+#[derive(serde::Deserialize)]
+struct AddMemberForm {
+    username: String,
+}
+
+/// Add member to organization (POST)
+async fn add_org_member(
+    State(state): State<Arc<AppState>>,
+    Path(org_name): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<AddMemberForm>,
+) -> Response {
+    let db = match &state.db {
+        Some(db) => db,
+        None => return render_error("Database not available"),
+    };
+
+    // Check if user is logged in
+    let current_user = match get_current_user(&state, &headers).await {
+        Some(u) => u,
+        None => return Redirect::to("/-/login?error=Please+sign+in").into_response(),
+    };
+
+    // Get org
+    let org = match user::Entity::find()
+        .filter(user::Column::Username.eq(&org_name))
+        .filter(user::Column::IsOrg.eq(true))
+        .one(db.as_ref())
+        .await
+    {
+        Ok(Some(o)) => o,
+        _ => return render_error("Organization not found"),
+    };
+
+    // Check if current user is org owner
+    let current_user_record = match user::Entity::find()
+        .filter(user::Column::Username.eq(&current_user))
+        .one(db.as_ref())
+        .await
+    {
+        Ok(Some(u)) => u,
+        _ => return render_error("User not found"),
+    };
+
+    let is_owner = org_member::Entity::find()
+        .filter(org_member::Column::OrgId.eq(org.id))
+        .filter(org_member::Column::UserId.eq(current_user_record.id))
+        .filter(org_member::Column::Role.eq("owner"))
+        .one(db.as_ref())
+        .await
+        .map(|r| r.is_some())
+        .unwrap_or(false);
+
+    if !is_owner {
+        return render_error("Only organization owners can add members");
+    }
+
+    // Find user to add
+    let new_member = match user::Entity::find()
+        .filter(user::Column::Username.eq(form.username.trim()))
+        .filter(user::Column::IsOrg.eq(false))
+        .one(db.as_ref())
+        .await
+    {
+        Ok(Some(u)) => u,
+        _ => return Redirect::to(&format!("/{}?error=User+not+found", org_name)).into_response(),
+    };
+
+    // Check if already a member
+    let existing = org_member::Entity::find()
+        .filter(org_member::Column::OrgId.eq(org.id))
+        .filter(org_member::Column::UserId.eq(new_member.id))
+        .one(db.as_ref())
+        .await;
+
+    if matches!(existing, Ok(Some(_))) {
+        return Redirect::to(&format!("/{}?error=User+is+already+a+member", org_name)).into_response();
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    // Add member
+    let membership = org_member::ActiveModel {
+        org_id: Set(org.id),
+        user_id: Set(new_member.id),
+        role: Set("member".to_string()),
+        created_at: Set(now),
+        ..Default::default()
+    };
+
+    if let Err(e) = membership.insert(db.as_ref()).await {
+        return render_error(&format!("Failed to add member: {}", e));
+    }
+
+    Redirect::to(&format!("/{}", org_name)).into_response()
+}
+
+/// Remove member from organization (POST)
+async fn remove_org_member(
+    State(state): State<Arc<AppState>>,
+    Path((org_name, username)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let db = match &state.db {
+        Some(db) => db,
+        None => return render_error("Database not available"),
+    };
+
+    // Check if user is logged in
+    let current_user = match get_current_user(&state, &headers).await {
+        Some(u) => u,
+        None => return Redirect::to("/-/login?error=Please+sign+in").into_response(),
+    };
+
+    // Get org
+    let org = match user::Entity::find()
+        .filter(user::Column::Username.eq(&org_name))
+        .filter(user::Column::IsOrg.eq(true))
+        .one(db.as_ref())
+        .await
+    {
+        Ok(Some(o)) => o,
+        _ => return render_error("Organization not found"),
+    };
+
+    // Check if current user is org owner
+    let current_user_record = match user::Entity::find()
+        .filter(user::Column::Username.eq(&current_user))
+        .one(db.as_ref())
+        .await
+    {
+        Ok(Some(u)) => u,
+        _ => return render_error("User not found"),
+    };
+
+    let is_owner = org_member::Entity::find()
+        .filter(org_member::Column::OrgId.eq(org.id))
+        .filter(org_member::Column::UserId.eq(current_user_record.id))
+        .filter(org_member::Column::Role.eq("owner"))
+        .one(db.as_ref())
+        .await
+        .map(|r| r.is_some())
+        .unwrap_or(false);
+
+    if !is_owner {
+        return render_error("Only organization owners can remove members");
+    }
+
+    // Find member to remove
+    let member_to_remove = match user::Entity::find()
+        .filter(user::Column::Username.eq(&username))
+        .one(db.as_ref())
+        .await
+    {
+        Ok(Some(u)) => u,
+        _ => return render_error("User not found"),
+    };
+
+    // Don't allow removing yourself if you're the only owner
+    if member_to_remove.id == current_user_record.id {
+        let owner_count = org_member::Entity::find()
+            .filter(org_member::Column::OrgId.eq(org.id))
+            .filter(org_member::Column::Role.eq("owner"))
+            .count(db.as_ref())
+            .await
+            .unwrap_or(0);
+
+        if owner_count <= 1 {
+            return Redirect::to(&format!("/{}?error=Cannot+remove+the+only+owner", org_name)).into_response();
+        }
+    }
+
+    // Remove membership
+    let _ = org_member::Entity::delete_many()
+        .filter(org_member::Column::OrgId.eq(org.id))
+        .filter(org_member::Column::UserId.eq(member_to_remove.id))
+        .exec(db.as_ref())
+        .await;
+
+    Redirect::to(&format!("/{}", org_name)).into_response()
+}
+
+// ============================================================================
 // Community Discussion Handlers
 // ============================================================================
 
@@ -2067,13 +2467,17 @@ struct DiscussionInfo {
     updated_at: String,
 }
 
-/// Comment info for templates
+/// Timeline item - unified comment or event for chronological display
 #[derive(serde::Serialize)]
-struct CommentInfo {
-    id: i32,
+struct TimelineItem {
+    item_type: String, // "comment", "event", or "op" (original post)
     author: String,
-    content: String,
+    content: Option<String>,
+    event_type: Option<String>,
+    old_value: Option<String>,
+    new_value: Option<String>,
     created_at: String,
+    timestamp: i64, // For sorting
 }
 
 /// Form for creating a new discussion
@@ -2290,8 +2694,20 @@ async fn discussion_detail(
         .await
         .unwrap_or_default();
 
-    let mut comment_infos = Vec::new();
-    for comment in comments {
+    // Get events (close/reopen/rename/lock activities)
+    let events = discussion_event::Entity::find()
+        .filter(discussion_event::Column::DiscussionId.eq(id))
+        .order_by_asc(discussion_event::Column::CreatedAt)
+        .all(db.as_ref())
+        .await
+        .unwrap_or_default();
+
+    // Build unified timeline
+    let mut timeline: Vec<TimelineItem> = Vec::new();
+
+    // Add comments to timeline (first comment is the original post)
+    let mut is_first = true;
+    for comment in &comments {
         let comment_author = user::Entity::find_by_id(comment.author_id)
             .one(db.as_ref())
             .await
@@ -2300,13 +2716,49 @@ async fn discussion_detail(
             .map(|u| u.username)
             .unwrap_or_else(|| "unknown".to_string());
 
-        comment_infos.push(CommentInfo {
-            id: comment.id,
+        timeline.push(TimelineItem {
+            item_type: if is_first { "op".to_string() } else { "comment".to_string() },
             author: comment_author,
-            content: comment.content,
+            content: Some(comment.content.clone()),
+            event_type: None,
+            old_value: None,
+            new_value: None,
             created_at: format_relative_time(comment.created_at),
+            timestamp: comment.created_at,
+        });
+        is_first = false;
+    }
+
+    // Add events to timeline
+    for event in events {
+        let event_actor = user::Entity::find_by_id(event.actor_id)
+            .one(db.as_ref())
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.username)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        timeline.push(TimelineItem {
+            item_type: "event".to_string(),
+            author: event_actor,
+            content: None,
+            event_type: Some(event.event_type),
+            old_value: event.old_value,
+            new_value: event.new_value,
+            created_at: format_relative_time(event.created_at),
+            timestamp: event.created_at,
         });
     }
+
+    // Sort timeline by timestamp (but keep OP first)
+    if !timeline.is_empty() {
+        let op = timeline.remove(0);
+        timeline.sort_by_key(|item| item.timestamp);
+        timeline.insert(0, op);
+    }
+
+    let reply_count = comments.len().saturating_sub(1); // Exclude OP
 
     let mut context = Context::new();
     context.insert("owner", &owner);
@@ -2317,8 +2769,8 @@ async fn discussion_detail(
     context.insert("discussion_author", &author);
     context.insert("discussion_status", &disc.status);
     context.insert("discussion_created", &format_relative_time(disc.created_at));
-    context.insert("comments", &comment_infos);
-    context.insert("comment_count", &comment_infos.len());
+    context.insert("timeline", &timeline);
+    context.insert("reply_count", &reply_count);
     context.insert("active_tab", "community");
 
     add_user_to_context(&mut context, &state, &headers).await;
@@ -2386,6 +2838,103 @@ async fn post_comment(
         .filter(discussion::Column::Id.eq(id))
         .exec(db.as_ref())
         .await;
+
+    Redirect::to(&format!("/{}/discussions/{}", full_name, id)).into_response()
+}
+
+/// Close a discussion (POST)
+async fn close_discussion(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo, id)): Path<(String, String, i32)>,
+    headers: HeaderMap,
+) -> Response {
+    update_discussion_status(state, &owner, &repo, id, "closed", &headers).await
+}
+
+/// Reopen a discussion (POST)
+async fn reopen_discussion(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo, id)): Path<(String, String, i32)>,
+    headers: HeaderMap,
+) -> Response {
+    update_discussion_status(state, &owner, &repo, id, "open", &headers).await
+}
+
+/// Helper to update discussion status
+async fn update_discussion_status(
+    state: Arc<AppState>,
+    owner: &str,
+    repo: &str,
+    id: i32,
+    new_status: &str,
+    headers: &HeaderMap,
+) -> Response {
+    let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
+
+    // Check if user is logged in and is the owner
+    let current_user = match get_current_user(&state, headers).await {
+        Some(u) => u,
+        None => return Redirect::to("/-/login?error=Please+sign+in").into_response(),
+    };
+
+    // Only repo owner can close/reopen discussions
+    if current_user != owner {
+        return render_error("Only the repository owner can close or reopen discussions");
+    }
+
+    let db = match &state.db {
+        Some(db) => db,
+        None => return render_error("Database not available"),
+    };
+
+    // Get user ID for event recording
+    let actor = match user::Entity::find()
+        .filter(user::Column::Username.eq(&current_user))
+        .one(db.as_ref())
+        .await
+    {
+        Ok(Some(u)) => u,
+        _ => return render_error("User not found"),
+    };
+
+    // Get current discussion status
+    let disc = match discussion::Entity::find_by_id(id)
+        .one(db.as_ref())
+        .await
+    {
+        Ok(Some(d)) if d.repo_name == full_name => d,
+        _ => return render_error("Discussion not found"),
+    };
+
+    let old_status = disc.status.clone();
+
+    // Update discussion status
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let _ = discussion::Entity::update_many()
+        .col_expr(discussion::Column::Status, sea_orm::sea_query::Expr::value(new_status))
+        .col_expr(discussion::Column::UpdatedAt, sea_orm::sea_query::Expr::value(now))
+        .filter(discussion::Column::Id.eq(id))
+        .filter(discussion::Column::RepoName.eq(&full_name))
+        .exec(db.as_ref())
+        .await;
+
+    // Record the event
+    let event_type = if new_status == "closed" { "closed" } else { "reopened" };
+    let new_event = discussion_event::ActiveModel {
+        discussion_id: Set(id),
+        actor_id: Set(actor.id),
+        event_type: Set(event_type.to_string()),
+        old_value: Set(Some(old_status)),
+        new_value: Set(Some(new_status.to_string())),
+        created_at: Set(now),
+        ..Default::default()
+    };
+    let _ = new_event.insert(db.as_ref()).await;
 
     Redirect::to(&format!("/{}/discussions/{}", full_name, id)).into_response()
 }

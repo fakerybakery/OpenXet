@@ -4,7 +4,10 @@
 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
     <h2 style="margin: 0;">Dashboard</h2>
     {% if current_user %}
-    <a href="/-/new" class="btn btn-primary">+ New Repository</a>
+    <div style="display: flex; gap: 8px;">
+        <a href="/-/new-org" class="btn">+ New Organization</a>
+        <a href="/-/new" class="btn btn-primary">+ New Repository</a>
+    </div>
     {% endif %}
 </div>
 

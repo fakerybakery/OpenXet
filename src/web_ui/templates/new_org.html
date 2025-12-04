@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}New Organization - OpenXet{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+    <a href="/">Home</a> / New Organization
+</div>
+
+<div style="max-width: 500px; margin: 40px auto;">
+    <h2 style="margin-bottom: 20px; color: #e0e0e0;">Create a new organization</h2>
+
+    {% if error %}
+    <div class="card" style="background: #3d1a1a; border-color: #f85149; margin-bottom: 16px;">
+        <div style="padding: 12px; color: #f85149;">{{ error }}</div>
+    </div>
+    {% endif %}
+
+    <div class="card">
+        <form method="POST" action="/-/new-org" style="padding: 16px;">
+            <div style="margin-bottom: 16px;">
+                <label style="display: block; margin-bottom: 8px; font-size: 13px; color: #e0e0e0;">Organization name</label>
+                <input type="text" name="name" required autofocus
+                    placeholder="my-org"
+                    pattern="[a-zA-Z0-9_-]+"
+                    class="edit-input" style="width: 100%;">
+                <small style="color: #666; font-size: 11px; margin-top: 6px; display: block;">
+                    Only letters, numbers, dashes, and underscores. Must be at least 2 characters.
+                </small>
+            </div>
+
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <a href="/" class="btn">Cancel</a>
+                <button type="submit" class="btn btn-primary">Create organization</button>
+            </div>
+        </form>
+    </div>
+
+    <p style="margin-top: 16px; font-size: 12px; color: #666;">
+        Organizations allow multiple users to collaborate on repositories.
+        You will be the owner of this organization and can add members.
+    </p>
+</div>
+{% endblock %}
