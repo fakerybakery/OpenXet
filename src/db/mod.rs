@@ -237,6 +237,56 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
         r#"CREATE INDEX IF NOT EXISTS idx_file_segments_file ON file_segments(file_hash)"#.to_string(),
     )).await?;
 
+    // Discussions table (community threads)
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"
+        CREATE TABLE IF NOT EXISTS discussions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            repo_name TEXT NOT NULL,
+            author_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        "#.to_string(),
+    )).await?;
+
+    // Create indexes for discussion lookups
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_discussions_repo ON discussions(repo_name)"#.to_string(),
+    )).await?;
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_discussions_author ON discussions(author_id)"#.to_string(),
+    )).await?;
+
+    // Discussion comments table
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"
+        CREATE TABLE IF NOT EXISTS discussion_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discussion_id INTEGER NOT NULL,
+            author_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (discussion_id) REFERENCES discussions(id) ON DELETE CASCADE,
+            FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        "#.to_string(),
+    )).await?;
+
+    // Create index for comment lookups
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_comments_discussion ON discussion_comments(discussion_id)"#.to_string(),
+    )).await?;
+
     tracing::info!("Database tables initialized");
     Ok(())
 }

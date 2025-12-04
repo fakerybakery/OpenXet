@@ -11,7 +11,9 @@ use std::sync::Arc;
 use tera::Context;
 
 use crate::api::AppState;
+use crate::db::entities::{discussion, discussion_comment, user};
 use crate::git::{CommitInfo, ObjectId, ObjectType, Repository, TreeEntry};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set};
 use super::templates;
 
 /// Create the web UI router with GitHub-like routes
@@ -40,6 +42,10 @@ pub fn create_router() -> Router<Arc<AppState>> {
         // Commit history and viewing
         .route("/:owner/:repo/commits/:ref", get(commits_list))
         .route("/:owner/:repo/commit/:sha", get(commit_view))
+        // Community discussions
+        .route("/:owner/:repo/discussions", get(discussions_list))
+        .route("/:owner/:repo/discussions/new", get(new_discussion_page).post(create_discussion))
+        .route("/:owner/:repo/discussions/:id", get(discussion_detail).post(post_comment))
 }
 
 /// Home page
@@ -1344,6 +1350,15 @@ fn format_time_ago(seconds: i64) -> String {
     format!("{} year{} ago", years, if years == 1 { "" } else { "s" })
 }
 
+/// Format a Unix timestamp as a relative time string
+fn format_relative_time(timestamp: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    format_time_ago(now - timestamp)
+}
+
 /// List commits for a branch
 async fn commits_list(
     State(state): State<Arc<AppState>>,
@@ -2034,4 +2049,343 @@ async fn create_repo(
 
     // Redirect to the new repo
     Redirect::to(&format!("/{}", full_name)).into_response()
+}
+
+// ============================================================================
+// Community Discussion Handlers
+// ============================================================================
+
+/// Discussion info for templates
+#[derive(serde::Serialize)]
+struct DiscussionInfo {
+    id: i32,
+    title: String,
+    author: String,
+    status: String,
+    comment_count: usize,
+    created_at: String,
+    updated_at: String,
+}
+
+/// Comment info for templates
+#[derive(serde::Serialize)]
+struct CommentInfo {
+    id: i32,
+    author: String,
+    content: String,
+    created_at: String,
+}
+
+/// Form for creating a new discussion
+#[derive(serde::Deserialize)]
+struct NewDiscussionForm {
+    title: String,
+    content: String,
+}
+
+/// Form for posting a comment
+#[derive(serde::Deserialize)]
+struct NewCommentForm {
+    content: String,
+}
+
+/// List discussions for a repo
+async fn discussions_list(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
+
+    // Check if repo exists
+    if state.repos.get_repo(&full_name).is_err() {
+        return render_error(&format!("Repository '{}' not found", full_name));
+    }
+
+    let db = match &state.db {
+        Some(db) => db,
+        None => return render_error("Database not available"),
+    };
+
+    // Get discussions for this repo
+    let discussions = discussion::Entity::find()
+        .filter(discussion::Column::RepoName.eq(&full_name))
+        .order_by_desc(discussion::Column::UpdatedAt)
+        .all(db.as_ref())
+        .await
+        .unwrap_or_default();
+
+    // Build discussion info with author names and comment counts
+    let mut discussion_infos = Vec::new();
+    for disc in discussions {
+        let author = user::Entity::find_by_id(disc.author_id)
+            .one(db.as_ref())
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.username)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let comment_count = discussion_comment::Entity::find()
+            .filter(discussion_comment::Column::DiscussionId.eq(disc.id))
+            .count(db.as_ref())
+            .await
+            .unwrap_or(0) as usize;
+
+        discussion_infos.push(DiscussionInfo {
+            id: disc.id,
+            title: disc.title,
+            author,
+            status: disc.status,
+            comment_count,
+            created_at: format_relative_time(disc.created_at),
+            updated_at: format_relative_time(disc.updated_at),
+        });
+    }
+
+    let mut context = Context::new();
+    context.insert("owner", &owner);
+    context.insert("repo_name", repo_name);
+    context.insert("full_name", &full_name);
+    context.insert("discussions", &discussion_infos);
+    context.insert("discussion_count", &discussion_infos.len());
+    context.insert("active_tab", "community");
+
+    add_user_to_context(&mut context, &state, &headers).await;
+
+    render_template("discussions.html", &context)
+}
+
+/// New discussion page (GET)
+async fn new_discussion_page(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
+
+    // Check if user is logged in
+    let current_user = get_current_user(&state, &headers).await;
+    if current_user.is_none() {
+        return Redirect::to(&format!("/-/login?error=Please+sign+in+to+start+a+discussion")).into_response();
+    }
+
+    let mut context = Context::new();
+    context.insert("owner", &owner);
+    context.insert("repo_name", repo_name);
+    context.insert("full_name", &full_name);
+    context.insert("current_user", &current_user);
+    context.insert("active_tab", "community");
+
+    render_template("new_discussion.html", &context)
+}
+
+/// Create a new discussion (POST)
+async fn create_discussion(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo)): Path<(String, String)>,
+    headers: HeaderMap,
+    Form(form): Form<NewDiscussionForm>,
+) -> Response {
+    let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
+
+    // Check if user is logged in
+    let current_user = match get_current_user(&state, &headers).await {
+        Some(u) => u,
+        None => return Redirect::to("/-/login?error=Please+sign+in+to+start+a+discussion").into_response(),
+    };
+
+    let db = match &state.db {
+        Some(db) => db,
+        None => return render_error("Database not available"),
+    };
+
+    // Get user ID
+    let user = match user::Entity::find()
+        .filter(user::Column::Username.eq(&current_user))
+        .one(db.as_ref())
+        .await
+    {
+        Ok(Some(u)) => u,
+        _ => return render_error("User not found"),
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    // Create discussion
+    let new_discussion = discussion::ActiveModel {
+        repo_name: Set(full_name.clone()),
+        author_id: Set(user.id),
+        title: Set(form.title.clone()),
+        status: Set("open".to_string()),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+
+    let disc = match new_discussion.insert(db.as_ref()).await {
+        Ok(d) => d,
+        Err(e) => return render_error(&format!("Failed to create discussion: {}", e)),
+    };
+
+    // Create first comment with content
+    if !form.content.trim().is_empty() {
+        let first_comment = discussion_comment::ActiveModel {
+            discussion_id: Set(disc.id),
+            author_id: Set(user.id),
+            content: Set(form.content),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        };
+        let _ = first_comment.insert(db.as_ref()).await;
+    }
+
+    Redirect::to(&format!("/{}/discussions/{}", full_name, disc.id)).into_response()
+}
+
+/// View a discussion thread
+async fn discussion_detail(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo, id)): Path<(String, String, i32)>,
+    headers: HeaderMap,
+) -> Response {
+    let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
+
+    let db = match &state.db {
+        Some(db) => db,
+        None => return render_error("Database not available"),
+    };
+
+    // Get discussion
+    let disc = match discussion::Entity::find_by_id(id)
+        .one(db.as_ref())
+        .await
+    {
+        Ok(Some(d)) if d.repo_name == full_name => d,
+        _ => return render_error("Discussion not found"),
+    };
+
+    // Get author
+    let author = user::Entity::find_by_id(disc.author_id)
+        .one(db.as_ref())
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.username)
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Get comments
+    let comments = discussion_comment::Entity::find()
+        .filter(discussion_comment::Column::DiscussionId.eq(id))
+        .order_by_asc(discussion_comment::Column::CreatedAt)
+        .all(db.as_ref())
+        .await
+        .unwrap_or_default();
+
+    let mut comment_infos = Vec::new();
+    for comment in comments {
+        let comment_author = user::Entity::find_by_id(comment.author_id)
+            .one(db.as_ref())
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.username)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        comment_infos.push(CommentInfo {
+            id: comment.id,
+            author: comment_author,
+            content: comment.content,
+            created_at: format_relative_time(comment.created_at),
+        });
+    }
+
+    let mut context = Context::new();
+    context.insert("owner", &owner);
+    context.insert("repo_name", repo_name);
+    context.insert("full_name", &full_name);
+    context.insert("discussion_id", &disc.id);
+    context.insert("discussion_title", &disc.title);
+    context.insert("discussion_author", &author);
+    context.insert("discussion_status", &disc.status);
+    context.insert("discussion_created", &format_relative_time(disc.created_at));
+    context.insert("comments", &comment_infos);
+    context.insert("comment_count", &comment_infos.len());
+    context.insert("active_tab", "community");
+
+    add_user_to_context(&mut context, &state, &headers).await;
+
+    render_template("discussion.html", &context)
+}
+
+/// Post a comment to a discussion (POST)
+async fn post_comment(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo, id)): Path<(String, String, i32)>,
+    headers: HeaderMap,
+    Form(form): Form<NewCommentForm>,
+) -> Response {
+    let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
+
+    // Check if user is logged in
+    let current_user = match get_current_user(&state, &headers).await {
+        Some(u) => u,
+        None => return Redirect::to("/-/login?error=Please+sign+in+to+comment").into_response(),
+    };
+
+    if form.content.trim().is_empty() {
+        return Redirect::to(&format!("/{}/discussions/{}", full_name, id)).into_response();
+    }
+
+    let db = match &state.db {
+        Some(db) => db,
+        None => return render_error("Database not available"),
+    };
+
+    // Get user ID
+    let user = match user::Entity::find()
+        .filter(user::Column::Username.eq(&current_user))
+        .one(db.as_ref())
+        .await
+    {
+        Ok(Some(u)) => u,
+        _ => return render_error("User not found"),
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    // Create comment
+    let new_comment = discussion_comment::ActiveModel {
+        discussion_id: Set(id),
+        author_id: Set(user.id),
+        content: Set(form.content),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    };
+
+    if let Err(e) = new_comment.insert(db.as_ref()).await {
+        return render_error(&format!("Failed to post comment: {}", e));
+    }
+
+    // Update discussion timestamp
+    let _ = discussion::Entity::update_many()
+        .col_expr(discussion::Column::UpdatedAt, sea_orm::sea_query::Expr::value(now))
+        .filter(discussion::Column::Id.eq(id))
+        .exec(db.as_ref())
+        .await;
+
+    Redirect::to(&format!("/{}/discussions/{}", full_name, id)).into_response()
 }

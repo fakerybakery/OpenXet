@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}New Discussion - {{ full_name }}{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+    <a href="/">Home</a> / <a href="/{{ owner }}">{{ owner }}</a> / <a href="/{{ full_name }}">{{ repo_name }}</a> / <a href="/{{ full_name }}/discussions">Community</a> / New
+</div>
+
+<div style="max-width: 700px; margin: 20px auto;">
+    <h2 style="margin-bottom: 20px; color: #e0e0e0;">Start a new discussion</h2>
+
+    <div class="card">
+        <form method="POST" action="/{{ full_name }}/discussions/new" style="padding: 16px;">
+            <div style="margin-bottom: 16px;">
+                <label style="display: block; margin-bottom: 8px; font-size: 13px; color: #e0e0e0;">Title</label>
+                <input type="text" name="title" required autofocus
+                    placeholder="What would you like to discuss?"
+                    class="edit-input" style="width: 100%;">
+            </div>
+
+            <div style="margin-bottom: 16px;">
+                <label style="display: block; margin-bottom: 8px; font-size: 13px; color: #e0e0e0;">Description</label>
+                <textarea name="content" placeholder="Provide more details about your discussion topic..."
+                    class="edit-input" style="width: 100%; min-height: 150px; resize: vertical;"></textarea>
+                <small style="color: #666; font-size: 11px; margin-top: 6px; display: block;">
+                    Be descriptive and provide context for others to understand your topic.
+                </small>
+            </div>
+
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <a href="/{{ full_name }}/discussions" class="btn">Cancel</a>
+                <button type="submit" class="btn btn-primary">Create discussion</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

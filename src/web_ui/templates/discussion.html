@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}{{ discussion_title }} - {{ full_name }}{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+    <a href="/">Home</a> / <a href="/{{ owner }}">{{ owner }}</a> / <a href="/{{ full_name }}">{{ repo_name }}</a> / <a href="/{{ full_name }}/discussions">Community</a>
+</div>
+
+<div class="flex items-center justify-between mb-2">
+    <h2 style="margin: 0;">{{ full_name }}</h2>
+</div>
+
+<div class="tabs">
+    <a href="/{{ full_name }}" class="tab">Files</a>
+    <a href="/{{ full_name }}/discussions" class="tab active">Community</a>
+</div>
+
+<!-- Discussion header -->
+<div class="card" style="margin-bottom: 12px;">
+    <div style="padding: 16px;">
+        <div style="display: flex; align-items: flex-start; gap: 12px;">
+            {% if discussion_status == "open" %}
+            <span class="badge badge-green" style="margin-top: 4px;">Open</span>
+            {% else %}
+            <span class="badge badge-purple" style="margin-top: 4px; background: #2d1f4a; color: #a371f7;">Closed</span>
+            {% endif %}
+            <div style="flex: 1;">
+                <h3 style="margin: 0 0 8px 0; font-size: 18px; color: #e0e0e0;">{{ discussion_title }}</h3>
+                <div style="font-size: 12px; color: #666;">
+                    <span style="color: #999;">{{ discussion_author }}</span> started this discussion {{ discussion_created }}
+                    &middot; {{ comment_count }} {% if comment_count == 1 %}comment{% else %}comments{% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Comments -->
+{% if comments %}
+<div class="card" style="margin-bottom: 12px;">
+    {% for comment in comments %}
+    <div style="padding: 12px 16px; border-bottom: 1px solid #333; {% if loop.last %}border-bottom: none;{% endif %}">
+        <div style="display: flex; align-items: flex-start; gap: 12px;">
+            <div style="width: 32px; height: 32px; border-radius: 50%; background: #333; display: flex; align-items: center; justify-content: center; color: #999; font-size: 12px; flex-shrink: 0;">
+                {{ comment.author | first | upper }}
+            </div>
+            <div style="flex: 1; min-width: 0;">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                    <span style="font-weight: 500; color: #e0e0e0;">{{ comment.author }}</span>
+                    <span style="font-size: 11px; color: #666;">{{ comment.created_at }}</span>
+                </div>
+                <div style="color: #ccc; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word;">{{ comment.content }}</div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- Reply form -->
+{% if current_user %}
+<div class="card">
+    <div class="card-header">Add a comment</div>
+    <form method="POST" action="/{{ full_name }}/discussions/{{ discussion_id }}" style="padding: 16px;">
+        <textarea name="content" placeholder="Leave a comment..." required
+            class="edit-input" style="width: 100%; min-height: 100px; resize: vertical; margin-bottom: 12px;"></textarea>
+        <div style="display: flex; justify-content: flex-end;">
+            <button type="submit" class="btn btn-primary">Comment</button>
+        </div>
+    </form>
+</div>
+{% else %}
+<div class="card">
+    <div class="empty" style="padding: 16px;">
+        <a href="/-/login" class="btn btn-primary">Sign in to comment</a>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

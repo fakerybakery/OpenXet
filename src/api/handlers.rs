@@ -26,6 +26,8 @@ pub struct AppState {
     pub auth: AuthManager,
     /// Channel to queue objects for background processing
     pub process_tx: mpsc::UnboundedSender<ContentHash>,
+    /// Database connection (optional, for web UI features)
+    pub db: Option<Arc<DatabaseConnection>>,
 }
 
 impl AppState {
@@ -51,6 +53,7 @@ impl AppState {
             cas,
             auth: AuthManager::new(),
             process_tx,
+            db: None,
         }
     }
 
@@ -77,8 +80,9 @@ impl AppState {
         Ok(Self {
             repos,
             cas,
-            auth: AuthManager::with_db(db),
+            auth: AuthManager::with_db(db.clone()),
             process_tx,
+            db: Some(db),
         })
     }
 

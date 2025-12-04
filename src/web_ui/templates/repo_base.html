@@ -27,6 +27,7 @@
     <a href="/{{ full_name }}?tab=overview&branch={{ current_ref }}" class="tab {% if tab == 'overview' %}active{% endif %}">Overview</a>
     <a href="/{{ full_name }}?tab=files&branch={{ current_ref }}" class="tab {% if tab == 'files' %}active{% endif %}">Files</a>
     <a href="/{{ full_name }}/commits/{{ current_ref }}" class="tab {% if tab == 'commits' %}active{% endif %}">Commits</a>
+    <a href="/{{ full_name }}/discussions" class="tab {% if tab == 'community' %}active{% endif %}">Community</a>
 </div>
 
 {% block repo_content %}{% endblock %}
