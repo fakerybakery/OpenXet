@@ -376,12 +376,16 @@
         .readme ul, .readme ol { margin: 10px 0; padding-left: 24px; }
         .readme li { margin: 4px 0; }
         .readme pre { margin: 12px 0; }
-        .readme code { background: var(--bg-elevated); }
+        .readme code { background: var(--bg-elevated); padding: 2px 6px; border-radius: var(--radius-sm); }
+        .readme pre code { background: transparent; padding: 0; border-radius: 0; }
         .readme blockquote { border-left: 3px solid var(--border); padding-left: 14px; color: var(--text-secondary); margin: 12px 0; }
         .readme img { max-width: 100%; border-radius: var(--radius-md); }
         .readme table { border-collapse: collapse; margin: 12px 0; width: 100%; }
         .readme th, .readme td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
         .readme th { background: var(--bg-elevated); font-weight: 500; }
+
+        /* Code block styling - integrates with highlight.js */
+        .readme pre code.hljs { background: transparent; padding: 0; }
 
         /* File header */
         .file-header {

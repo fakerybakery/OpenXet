@@ -11,10 +11,17 @@
 </div>
 
 {% if readme_html %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
 <div class="card">
     <div class="card-header">README</div>
     <div class="readme">{{ readme_html | safe }}</div>
 </div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
+document.querySelectorAll('.readme pre code').forEach(function(block) {
+    hljs.highlightElement(block);
+});
+</script>
 {% endif %}
 
 {% if not readme_html and not branches %}
