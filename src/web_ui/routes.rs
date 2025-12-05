@@ -31,6 +31,8 @@ pub fn create_router() -> Router<Arc<AppState>> {
         .route("/-/new-org", get(new_org_page).post(create_org))
         // Stats page
         .route("/-/stats", get(stats))
+        // Search
+        .route("/-/search", get(search))
         // User/org profile page (must come before /:owner/:repo)
         .route("/:owner", get(user_profile))
         .route("/:owner/members", axum::routing::post(add_org_member))
@@ -383,6 +385,74 @@ async fn stats(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respon
     add_user_to_context(&mut context, &state, &headers).await;
 
     render_template("index.html", &context)
+}
+
+/// Search query params
+#[derive(serde::Deserialize)]
+struct SearchQuery {
+    q: Option<String>,
+}
+
+/// Search result item
+#[derive(serde::Serialize)]
+struct SearchResult {
+    name: String,
+    description: Option<String>,
+}
+
+/// Search response for JSON API
+#[derive(serde::Serialize)]
+struct SearchResponse {
+    results: Vec<SearchResult>,
+    query: String,
+}
+
+/// Search page and API
+async fn search(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<SearchQuery>,
+) -> Response {
+    let raw_query = query.q.unwrap_or_default();
+    let q = raw_query.trim().to_lowercase();
+
+    // Get all repos and filter by query
+    let repos: Vec<String> = state.repos.list_repos();
+
+    let results: Vec<SearchResult> = if q.is_empty() {
+        repos.iter().take(20).map(|name| SearchResult {
+            name: name.clone(),
+            description: None,
+        }).collect()
+    } else {
+        repos.iter()
+            .filter(|name| name.to_lowercase().contains(&q))
+            .take(20)
+            .map(|name| SearchResult {
+                name: name.clone(),
+                description: None,
+            })
+            .collect()
+    };
+
+    // Check if this is a JSON request (from the dropdown)
+    let accept = headers.get("accept").and_then(|h| h.to_str().ok()).unwrap_or("");
+    if accept.contains("application/json") || headers.get("x-requested-with").is_some() {
+        let response = SearchResponse {
+            results,
+            query: q,
+        };
+        return axum::Json(response).into_response();
+    }
+
+    // For full page request, render search results page
+    let mut context = Context::new();
+    context.insert("query", &raw_query);
+    context.insert("results", &results);
+    context.insert("result_count", &results.len());
+    add_user_to_context(&mut context, &state, &headers).await;
+
+    render_template("search.html", &context)
 }
 
 /// Helper to render a template
@@ -2081,6 +2151,7 @@ async fn logout() -> Response {
 #[derive(serde::Deserialize)]
 struct NewRepoForm {
     name: String,
+    namespace: String,
 }
 
 /// New repository page (GET)
@@ -2096,8 +2167,40 @@ async fn new_repo_page(
     if current_user.is_none() {
         return Redirect::to("/-/login?error=Please+sign+in+to+create+a+repository").into_response();
     }
+    let username = current_user.clone().unwrap();
 
     context.insert("current_user", &current_user);
+
+    // Get user's organizations for namespace dropdown
+    let mut namespaces: Vec<String> = vec![username.clone()];
+
+    if let Some(db) = &state.db {
+        // Get the user record
+        if let Ok(Some(user_record)) = user::Entity::find()
+            .filter(user::Column::Username.eq(&username))
+            .one(db.as_ref())
+            .await
+        {
+            // Get orgs this user is a member of
+            let memberships = org_member::Entity::find()
+                .filter(org_member::Column::UserId.eq(user_record.id))
+                .all(db.as_ref())
+                .await
+                .unwrap_or_default();
+
+            for membership in memberships {
+                // Get the org (which is also a user record with is_org=true)
+                if let Ok(Some(org)) = user::Entity::find_by_id(membership.org_id)
+                    .one(db.as_ref())
+                    .await
+                {
+                    namespaces.push(org.username);
+                }
+            }
+        }
+    }
+
+    context.insert("namespaces", &namespaces);
 
     if let Some(error) = query.get("error") {
         context.insert("error", error);
@@ -2130,8 +2233,53 @@ async fn create_repo(
         return Redirect::to("/-/new?error=Repository+name+can+only+contain+letters,+numbers,+dashes,+underscores,+and+dots").into_response();
     }
 
+    // Validate namespace - must be current user or an org the user is a member of
+    let namespace = form.namespace.trim();
+    if namespace.is_empty() {
+        return Redirect::to("/-/new?error=Please+select+a+namespace").into_response();
+    }
+
+    // Check if user is allowed to create in this namespace
+    let allowed = if namespace == current_user {
+        true
+    } else if let Some(db) = &state.db {
+        // Check if namespace is an org the user is a member of
+        let user_record = user::Entity::find()
+            .filter(user::Column::Username.eq(&current_user))
+            .one(db.as_ref())
+            .await
+            .ok()
+            .flatten();
+
+        let org_record = user::Entity::find()
+            .filter(user::Column::Username.eq(namespace))
+            .filter(user::Column::IsOrg.eq(true))
+            .one(db.as_ref())
+            .await
+            .ok()
+            .flatten();
+
+        if let (Some(user), Some(org)) = (user_record, org_record) {
+            org_member::Entity::find()
+                .filter(org_member::Column::UserId.eq(user.id))
+                .filter(org_member::Column::OrgId.eq(org.id))
+                .one(db.as_ref())
+                .await
+                .map(|r| r.is_some())
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !allowed {
+        return Redirect::to("/-/new?error=You+don't+have+permission+to+create+repositories+in+this+namespace").into_response();
+    }
+
     // Create repo path
-    let full_name = format!("{}/{}", current_user, name);
+    let full_name = format!("{}/{}", namespace, name);
 
     // Check if repo already exists
     if state.repos.get_repo(&full_name).is_ok() {

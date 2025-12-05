@@ -16,15 +16,20 @@
         <form method="POST" action="/-/new">
             <div class="card-body">
                 <div>
+                    <label class="text-sm text-secondary mb-1" style="display: block;">Owner</label>
+                    <select name="namespace" class="select" style="width: 100%;" id="namespace-select">
+                        {% for ns in namespaces %}
+                        <option value="{{ ns }}">{{ ns }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div style="margin-top: 16px;">
                     <label class="text-sm text-secondary mb-1" style="display: block;">Repository name</label>
-                    <div class="flex items-center gap-2">
-                        <span class="text-secondary text-sm">{{ current_user }} /</span>
-                        <input type="text" name="name" required autofocus
-                            pattern="[a-zA-Z0-9._-]+"
-                            minlength="2"
-                            placeholder="my-model"
-                            class="input" style="flex: 1;">
-                    </div>
+                    <input type="text" name="name" required autofocus
+                        pattern="[a-zA-Z0-9._-]+"
+                        minlength="2"
+                        placeholder="my-model"
+                        class="input" style="width: 100%;">
                     <span class="text-xs text-muted mt-1" style="display: block;">Letters, numbers, dashes, underscores, and dots only</span>
                 </div>
             </div>
@@ -39,13 +44,19 @@
         <div class="card-header">Quick Start</div>
         <div class="card-body">
             <p class="text-muted text-sm mb-2">After creating the repository, push your files:</p>
-            <pre class="font-mono text-xs" style="background: var(--bg-elevated); padding: 12px; border-radius: var(--radius-sm); overflow-x: auto;">cd your-project
+            <pre class="font-mono text-xs" id="quickstart-code" style="background: var(--bg-elevated); padding: 12px; border-radius: var(--radius-sm); overflow-x: auto;">cd your-project
 git init
 git add .
 git commit -m "Initial commit"
-git remote add origin http://localhost:8080/{{ current_user }}/your-repo.git
+git remote add origin http://localhost:8080/<span id="quickstart-namespace">{{ current_user }}</span>/your-repo.git
 git push -u origin main</pre>
         </div>
     </div>
 </div>
+
+<script>
+document.getElementById('namespace-select').addEventListener('change', function() {
+    document.getElementById('quickstart-namespace').textContent = this.value;
+});
+</script>
 {% endblock %}

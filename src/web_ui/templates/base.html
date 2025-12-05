@@ -82,6 +82,71 @@
         .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
         .header-user { color: var(--text-secondary); font-size: 12px; }
 
+        /* Search */
+        .search-container { position: relative; flex: 1; max-width: 400px; }
+        .search-input {
+            width: 100%;
+            height: 32px;
+            padding: 0 12px 0 32px;
+            background: var(--bg-page);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            color: var(--text-primary);
+            font-size: 13px;
+            font-family: inherit;
+        }
+        .search-input:focus { outline: none; border-color: #444; background: var(--bg-surface); }
+        .search-input::placeholder { color: var(--text-muted); }
+        .search-icon {
+            position: absolute;
+            left: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 14px;
+            height: 14px;
+            color: var(--text-muted);
+            pointer-events: none;
+        }
+        .search-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            margin-top: 4px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            z-index: 100;
+            display: none;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .search-dropdown.active { display: block; }
+        .search-result {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            cursor: pointer;
+        }
+        .search-result:hover { background: var(--bg-hover); }
+        .search-result-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: var(--radius-sm);
+            background: var(--bg-elevated);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .search-result-info { flex: 1; min-width: 0; }
+        .search-result-name { font-weight: 500; }
+        .search-result-desc { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .search-empty { padding: 20px; text-align: center; color: var(--text-muted); font-size: 13px; }
+        .search-hint { padding: 8px 12px; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border); }
+
         /* Layout */
         .container { max-width: 960px; margin: 0 auto; padding: 24px 20px; }
 
@@ -354,12 +419,20 @@
 <body>
     <header class="header">
         <a href="/" class="logo">OpenXet</a>
-        <nav class="nav">
-            <a href="/">Explore</a>
-        </nav>
+        <div class="search-container">
+            <svg class="search-icon" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0Zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04a.75.75 0 1 1-1.06 1.06l-3.04-3.04Z"/>
+            </svg>
+            <input type="text" class="search-input" id="search-input" placeholder="Search models, datasets, users..." autocomplete="off">
+            <div class="search-dropdown" id="search-dropdown">
+                <div class="search-empty" id="search-empty">Type to search repositories</div>
+                <div id="search-results"></div>
+            </div>
+        </div>
         <div class="header-right">
             {% if current_user %}
-            <span class="header-user">{{ current_user }}</span>
+            <a href="/-/new" class="btn btn-sm">New</a>
+            <a href="/{{ current_user }}" class="header-user">{{ current_user }}</a>
             <a href="/-/logout" class="btn btn-sm btn-ghost">Sign out</a>
             {% else %}
             <a href="/-/login" class="btn btn-sm btn-ghost">Sign in</a>
@@ -367,6 +440,92 @@
             {% endif %}
         </div>
     </header>
+
+    <script>
+    (function() {
+        var searchInput = document.getElementById('search-input');
+        var searchDropdown = document.getElementById('search-dropdown');
+        var searchResults = document.getElementById('search-results');
+        var searchEmpty = document.getElementById('search-empty');
+        var debounceTimer;
+
+        searchInput.addEventListener('focus', function() {
+            if (searchInput.value.length > 0) {
+                searchDropdown.classList.add('active');
+            }
+        });
+
+        searchInput.addEventListener('blur', function() {
+            setTimeout(function() {
+                searchDropdown.classList.remove('active');
+            }, 200);
+        });
+
+        searchInput.addEventListener('input', function() {
+            clearTimeout(debounceTimer);
+            var query = searchInput.value.trim();
+
+            if (query.length === 0) {
+                searchDropdown.classList.remove('active');
+                searchResults.innerHTML = '';
+                searchEmpty.style.display = 'block';
+                return;
+            }
+
+            searchDropdown.classList.add('active');
+            searchEmpty.textContent = 'Searching...';
+            searchEmpty.style.display = 'block';
+
+            debounceTimer = setTimeout(function() {
+                fetch('/-/search?q=' + encodeURIComponent(query))
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        searchResults.innerHTML = '';
+                        if (data.results && data.results.length > 0) {
+                            searchEmpty.style.display = 'none';
+                            data.results.forEach(function(repo) {
+                                var div = document.createElement('a');
+                                div.href = '/' + repo.name;
+                                div.className = 'search-result';
+                                div.innerHTML = '<div class="search-result-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8z"/></svg></div>' +
+                                    '<div class="search-result-info"><div class="search-result-name">' + repo.name + '</div>' +
+                                    (repo.description ? '<div class="search-result-desc">' + repo.description + '</div>' : '') + '</div>';
+                                searchResults.appendChild(div);
+                            });
+                        } else {
+                            searchEmpty.textContent = 'No repositories found';
+                            searchEmpty.style.display = 'block';
+                        }
+                    })
+                    .catch(function() {
+                        searchEmpty.textContent = 'Search failed';
+                        searchEmpty.style.display = 'block';
+                    });
+            }, 150);
+        });
+
+        searchInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                var query = searchInput.value.trim();
+                if (query.length > 0) {
+                    window.location.href = '/-/search?q=' + encodeURIComponent(query);
+                }
+            }
+            if (e.key === 'Escape') {
+                searchDropdown.classList.remove('active');
+                searchInput.blur();
+            }
+        });
+
+        // Keyboard shortcut: / to focus search
+        document.addEventListener('keydown', function(e) {
+            if (e.key === '/' && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+                e.preventDefault();
+                searchInput.focus();
+            }
+        });
+    })();
+    </script>
     <div class="container">
         {% block content %}{% endblock %}
     </div>
