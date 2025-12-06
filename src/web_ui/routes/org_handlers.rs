@@ -11,18 +11,20 @@ use tera::Context;
 
 use crate::api::AppState;
 use crate::db::entities::{org_member, user};
-use super::utils::{render_template, render_error, get_current_user};
+use super::utils::{render_template, render_error, get_current_user, add_csrf_to_context, get_session_token, verify_csrf_token};
 
 /// Form for creating a new org
 #[derive(serde::Deserialize)]
 pub struct NewOrgForm {
     pub name: String,
+    pub csrf_token: String,
 }
 
 /// Form for adding a member
 #[derive(serde::Deserialize)]
 pub struct AddMemberForm {
     pub username: String,
+    pub csrf_token: String,
 }
 
 /// New repository page (GET)
@@ -72,6 +74,7 @@ pub async fn new_repo_page(
         context.insert("error", error);
     }
 
+    add_csrf_to_context(&mut context, &headers).await;
     render_template("new_repo.html", &context)
 }
 
@@ -81,6 +84,12 @@ pub async fn create_repo(
     headers: HeaderMap,
     Form(form): Form<super::home_handlers::NewRepoForm>,
 ) -> Response {
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return render_error("Invalid request. Please try again.");
+    }
+
     let current_user = match get_current_user(&state, &headers).await {
         Some(u) => u,
         None => return Redirect::to("/-/login?error=Please+sign+in+to+create+a+repository").into_response(),
@@ -169,6 +178,7 @@ pub async fn new_org_page(
         context.insert("error", error);
     }
 
+    add_csrf_to_context(&mut context, &headers).await;
     render_template("new_org.html", &context)
 }
 
@@ -178,6 +188,12 @@ pub async fn create_org(
     headers: HeaderMap,
     Form(form): Form<NewOrgForm>,
 ) -> Response {
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return render_error("Invalid request. Please try again.");
+    }
+
     let current_user = match get_current_user(&state, &headers).await {
         Some(u) => u,
         None => return Redirect::to("/-/login?error=Please+sign+in+to+create+an+organization").into_response(),
@@ -259,6 +275,12 @@ pub async fn add_org_member(
     headers: HeaderMap,
     Form(form): Form<AddMemberForm>,
 ) -> Response {
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return render_error("Invalid request. Please try again.");
+    }
+
     let db = match &state.db {
         Some(db) => db,
         None => return render_error("Database not available"),

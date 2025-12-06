@@ -32,6 +32,7 @@ struct OrgInfo {
 pub struct NewRepoForm {
     pub name: String,
     pub namespace: String,
+    pub csrf_token: String,
 }
 
 /// Query params for repo page

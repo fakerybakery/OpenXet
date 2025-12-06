@@ -22,8 +22,32 @@ use super::auth::{AuthManager, Token};
 use super::handlers::AppState;
 use crate::cas::ContentHash;
 
-/// Secret key for signing LFS URLs (in production, load from config)
-const LFS_URL_SECRET: &[u8] = b"openxet-lfs-url-signing-secret-change-in-prod";
+use once_cell::sync::Lazy;
+
+/// Secret key for signing LFS URLs
+/// MUST be set via LFS_URL_SECRET environment variable in production
+static LFS_URL_SECRET: Lazy<Vec<u8>> = Lazy::new(|| {
+    match std::env::var("LFS_URL_SECRET") {
+        Ok(secret) if secret.len() >= 32 => secret.into_bytes(),
+        Ok(secret) if !secret.is_empty() => {
+            tracing::error!("LFS_URL_SECRET must be at least 32 characters");
+            panic!("LFS_URL_SECRET must be at least 32 characters");
+        }
+        _ => {
+            tracing::warn!("================================================");
+            tracing::warn!("WARNING: LFS_URL_SECRET not set!");
+            tracing::warn!("Using auto-generated secret (not persisted).");
+            tracing::warn!("Set LFS_URL_SECRET env var in production.");
+            tracing::warn!("================================================");
+            // Generate a random secret for development
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            let mut secret = vec![0u8; 32];
+            rng.fill(&mut secret[..]);
+            secret
+        }
+    }
+});
 
 /// URL signature validity in seconds
 const LFS_URL_EXPIRY_SECS: u64 = 3600;
@@ -119,7 +143,7 @@ fn sign_lfs_url(base_url: &str, oid: &str, operation: &str) -> String {
 /// Generate HMAC signature for URL validation
 fn generate_signature(oid: &str, operation: &str, expires: u64) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(LFS_URL_SECRET);
+    hasher.update(&*LFS_URL_SECRET);
     hasher.update(oid.as_bytes());
     hasher.update(operation.as_bytes());
     hasher.update(expires.to_le_bytes());

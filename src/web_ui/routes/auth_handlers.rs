@@ -2,20 +2,21 @@
 
 use axum::{
     extract::{Form, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
 };
 use std::sync::Arc;
 use tera::Context;
 
 use crate::api::AppState;
-use super::utils::render_template;
+use super::utils::{render_template, add_csrf_to_context, get_session_token, verify_csrf_token};
 
 /// Login form data
 #[derive(serde::Deserialize)]
 pub struct LoginForm {
     pub username: String,
     pub password: String,
+    pub csrf_token: String,
 }
 
 /// Signup form data
@@ -24,10 +25,14 @@ pub struct SignupForm {
     pub username: String,
     pub password: String,
     pub email: Option<String>,
+    pub csrf_token: String,
 }
 
 /// Login page (GET)
-pub async fn login_page(Query(query): Query<std::collections::HashMap<String, String>>) -> Response {
+pub async fn login_page(
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
     let mut context = Context::new();
     if let Some(error) = query.get("error") {
         context.insert("error", error);
@@ -35,14 +40,22 @@ pub async fn login_page(Query(query): Query<std::collections::HashMap<String, St
     if let Some(msg) = query.get("message") {
         context.insert("message", msg);
     }
+    add_csrf_to_context(&mut context, &headers).await;
     render_template("login.html", &context)
 }
 
 /// Login submit (POST)
 pub async fn login_submit(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return Redirect::to("/-/login?error=Invalid+request.+Please+try+again.").into_response();
+    }
+
     match state.auth.authenticate(&form.username, &form.password).await {
         Ok(token) => {
             Response::builder()
@@ -59,25 +72,36 @@ pub async fn login_submit(
 }
 
 /// Signup page (GET)
-pub async fn signup_page(Query(query): Query<std::collections::HashMap<String, String>>) -> Response {
+pub async fn signup_page(
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Response {
     let mut context = Context::new();
     if let Some(error) = query.get("error") {
         context.insert("error", error);
     }
+    add_csrf_to_context(&mut context, &headers).await;
     render_template("signup.html", &context)
 }
 
 /// Signup submit (POST)
 pub async fn signup_submit(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Form(form): Form<SignupForm>,
 ) -> Response {
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return Redirect::to("/-/signup?error=Invalid+request.+Please+try+again.").into_response();
+    }
+
     // Validate
     if form.username.len() < 2 {
         return Redirect::to("/-/signup?error=Username+must+be+at+least+2+characters").into_response();
     }
-    if form.password.len() < 4 {
-        return Redirect::to("/-/signup?error=Password+must+be+at+least+4+characters").into_response();
+    if form.password.len() < 8 {
+        return Redirect::to("/-/signup?error=Password+must+be+at+least+8+characters").into_response();
     }
     if !form.username.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
         return Redirect::to("/-/signup?error=Username+can+only+contain+letters,+numbers,+dashes,+and+underscores").into_response();

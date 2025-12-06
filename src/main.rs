@@ -51,10 +51,16 @@ async fn main() {
             .expect("Failed to create application state")
     );
 
-    // Ensure default admin user exists (for bootstrapping)
-    state.auth.ensure_admin_user("admin", "admin")
-        .await
-        .expect("Failed to create admin user");
+    // Bootstrap admin user from environment or generate random password
+    if let Some(admin_password) = state.auth.ensure_admin_user_secure().await
+        .expect("Failed to create admin user")
+    {
+        tracing::warn!("================================================");
+        tracing::warn!("INITIAL ADMIN CREDENTIALS (change immediately!)");
+        tracing::warn!("  Username: admin");
+        tracing::warn!("  Password: {}", admin_password);
+        tracing::warn!("================================================");
+    }
 
     // Log repository count
     let repo_count = state.repos.list_repos().len();
@@ -97,7 +103,6 @@ async fn main() {
     // Start server
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
     tracing::info!("Git-Xet Server starting on http://{}", addr);
-    tracing::info!("Default admin: admin/admin");
     tracing::info!("");
     tracing::info!("API Endpoints:");
     tracing::info!("  POST /api/auth/register - Register new user");

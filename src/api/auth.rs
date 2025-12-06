@@ -7,28 +7,62 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
+};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use parking_lot::RwLock;
+use rand::Rng;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set,
 };
-use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 use crate::db::entities::{org_member, user};
 use crate::error::{Result, ServerError};
 
-/// Hash a password with salt
+/// Hash a password using Argon2id with random salt
+/// Returns the PHC-format hash string (includes salt, params, and hash)
 pub fn hash_password(password: &str) -> String {
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+
+    argon2
+        .hash_password(password.as_bytes(), &salt)
+        .expect("Failed to hash password")
+        .to_string()
+}
+
+/// Verify a password against an Argon2 hash using constant-time comparison
+/// Also supports legacy SHA-256 hashes for migration (64 hex chars)
+pub fn verify_password(password: &str, hash: &str) -> bool {
+    // Check if this is a legacy SHA-256 hash (64 hex chars, no $ prefix)
+    if hash.len() == 64 && !hash.starts_with('$') && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        // Legacy format - verify with constant-time comparison
+        let legacy_hash = hash_password_legacy(password);
+        return legacy_hash.as_bytes().ct_eq(hash.as_bytes()).into();
+    }
+
+    // Argon2 PHC format hash
+    let parsed_hash = match PasswordHash::new(hash) {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+
+    Argon2::default()
+        .verify_password(password.as_bytes(), &parsed_hash)
+        .is_ok()
+}
+
+/// Legacy SHA-256 password hashing (for migration only - do not use for new passwords)
+fn hash_password_legacy(password: &str) -> String {
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(b"git-xet-server-salt:");
     hasher.update(password.as_bytes());
     let result = hasher.finalize();
     result.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-/// Verify a password against a hash
-pub fn verify_password(password: &str, hash: &str) -> bool {
-    hash_password(password) == hash
 }
 
 /// An access token
@@ -60,27 +94,24 @@ impl Token {
     }
 }
 
-/// Generate a secure random token
+/// Generate a cryptographically secure random token
 fn generate_token() -> String {
-    let mut hasher = Sha256::new();
+    let mut rng = rand::thread_rng();
+    let mut token_bytes = [0u8; 32]; // 256 bits of entropy
+    rng.fill(&mut token_bytes);
+    BASE64.encode(token_bytes)
+}
 
-    // Use timestamp for uniqueness
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    hasher.update(timestamp.to_le_bytes());
-
-    // Use thread ID
-    let thread_id = std::thread::current().id();
-    hasher.update(format!("{:?}", thread_id).as_bytes());
-
-    // Use random-ish data from stack
-    let stack_addr = &timestamp as *const _ as usize;
-    hasher.update(stack_addr.to_le_bytes());
-
-    let result = hasher.finalize();
-    BASE64.encode(&result[..24]) // 24 bytes = 32 base64 chars
+/// Generate a secure random password for initial admin setup
+pub fn generate_random_password() -> String {
+    const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
+    let mut rng = rand::thread_rng();
+    (0..24)
+        .map(|_| {
+            let idx = rng.gen_range(0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect()
 }
 
 /// Authentication manager with database backend
@@ -493,13 +524,43 @@ impl AuthManager {
         tokens.remove(token_str);
     }
 
-    /// Ensure default admin user exists (for bootstrapping)
-    pub async fn ensure_admin_user(&self, username: &str, password: &str) -> Result<()> {
-        if self.get_user_by_username(username).await?.is_none() {
-            self.register_user(username, password, None).await?;
-            tracing::info!("Created default admin user '{}'", username);
+    /// Ensure admin user exists with secure password handling
+    ///
+    /// Password priority:
+    /// 1. GIT_XET_ADMIN_PASSWORD environment variable
+    /// 2. Generate random password (returned to caller for display)
+    ///
+    /// Returns Some(password) if a new admin was created, None if admin already exists
+    pub async fn ensure_admin_user_secure(&self) -> Result<Option<String>> {
+        const ADMIN_USERNAME: &str = "admin";
+
+        // Check if admin already exists
+        if self.get_user_by_username(ADMIN_USERNAME).await?.is_some() {
+            return Ok(None);
         }
-        Ok(())
+
+        // Get password from environment or generate random one
+        let (password, is_generated) = match std::env::var("GIT_XET_ADMIN_PASSWORD") {
+            Ok(pwd) if !pwd.is_empty() => {
+                if pwd.len() < 12 {
+                    return Err(ServerError::InvalidRequest(
+                        "GIT_XET_ADMIN_PASSWORD must be at least 12 characters".to_string()
+                    ));
+                }
+                (pwd, false)
+            }
+            _ => (generate_random_password(), true),
+        };
+
+        self.register_user(ADMIN_USERNAME, &password, None).await?;
+        tracing::info!("Created admin user '{}'", ADMIN_USERNAME);
+
+        // Only return password if it was generated (so it can be displayed)
+        if is_generated {
+            Ok(Some(password))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -514,14 +575,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_password_hash() {
+    fn test_password_hash_argon2() {
         let hash1 = hash_password("test123");
         let hash2 = hash_password("test123");
         let hash3 = hash_password("different");
 
-        assert_eq!(hash1, hash2);
+        // Argon2 hashes should be different each time (unique salts)
+        assert_ne!(hash1, hash2);
         assert_ne!(hash1, hash3);
+
+        // But verification should work
         assert!(verify_password("test123", &hash1));
+        assert!(verify_password("test123", &hash2));
         assert!(!verify_password("wrong", &hash1));
+        assert!(!verify_password("test123", &hash3));
+
+        // Hash should be in PHC format (starts with $argon2)
+        assert!(hash1.starts_with("$argon2"));
+    }
+
+    #[test]
+    fn test_legacy_password_migration() {
+        // Legacy SHA-256 hash for "test123"
+        let legacy_hash = hash_password_legacy("test123");
+        assert_eq!(legacy_hash.len(), 64);
+        assert!(legacy_hash.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Should still verify correctly
+        assert!(verify_password("test123", &legacy_hash));
+        assert!(!verify_password("wrong", &legacy_hash));
+    }
+
+    #[test]
+    fn test_token_generation() {
+        let token1 = generate_token();
+        let token2 = generate_token();
+
+        // Tokens should be unique
+        assert_ne!(token1, token2);
+
+        // Tokens should be base64 encoded (44 chars for 32 bytes)
+        assert_eq!(token1.len(), 44);
+    }
+
+    #[test]
+    fn test_random_password_generation() {
+        let pwd1 = generate_random_password();
+        let pwd2 = generate_random_password();
+
+        // Passwords should be unique
+        assert_ne!(pwd1, pwd2);
+
+        // Should be 24 characters
+        assert_eq!(pwd1.len(), 24);
     }
 }

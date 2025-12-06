@@ -10,7 +10,7 @@ use tera::Context;
 
 use crate::api::AppState;
 use crate::git::ObjectType;
-use super::utils::{render_template, render_error, add_user_to_context, Breadcrumb};
+use super::utils::{render_template, render_error, add_user_to_context, add_csrf_to_context, get_session_token, verify_csrf_token, Breadcrumb};
 use super::lfs::parse_lfs_pointer;
 use super::tree_ops::{build_updated_tree, build_tree_with_addition, build_tree_with_deletion};
 
@@ -20,6 +20,7 @@ pub struct EditForm {
     pub content: String,
     pub filename: String,
     pub message: Option<String>,
+    pub csrf_token: String,
 }
 
 /// Edit a file (GET - show editor)
@@ -95,6 +96,7 @@ pub async fn edit_file(
     context.insert("active_tab", "files");
 
     add_user_to_context(&mut context, &state, &headers).await;
+    add_csrf_to_context(&mut context, &headers).await;
 
     render_template("edit.html", &context)
 }
@@ -142,6 +144,7 @@ async fn render_new_file_form(state: &AppState, headers: &HeaderMap, owner: &str
     context.insert("active_tab", "files");
 
     add_user_to_context(&mut context, state, headers).await;
+    add_csrf_to_context(&mut context, headers).await;
 
     render_template("edit.html", &context)
 }
@@ -150,8 +153,14 @@ async fn render_new_file_form(state: &AppState, headers: &HeaderMap, owner: &str
 pub async fn commit_file(
     State(state): State<Arc<AppState>>,
     Path((owner, repo, ref_name, path)): Path<(String, String, String, String)>,
+    headers: HeaderMap,
     Form(form): Form<EditForm>,
 ) -> Response {
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return render_error("Invalid request. Please try again.");
+    }
     commit_file_impl(state, &owner, &repo, &ref_name, &path, form).await
 }
 
@@ -159,8 +168,14 @@ pub async fn commit_file(
 pub async fn commit_new_file(
     State(state): State<Arc<AppState>>,
     Path((owner, repo, ref_name)): Path<(String, String, String)>,
+    headers: HeaderMap,
     Form(form): Form<EditForm>,
 ) -> Response {
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return render_error("Invalid request. Please try again.");
+    }
     commit_file_impl(state, &owner, &repo, &ref_name, "", form).await
 }
 
@@ -168,8 +183,14 @@ pub async fn commit_new_file(
 pub async fn commit_new_file_in_dir(
     State(state): State<Arc<AppState>>,
     Path((owner, repo, ref_name, _dir)): Path<(String, String, String, String)>,
+    headers: HeaderMap,
     Form(form): Form<EditForm>,
 ) -> Response {
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return render_error("Invalid request. Please try again.");
+    }
     commit_file_impl(state, &owner, &repo, &ref_name, "", form).await
 }
 

@@ -31,6 +31,9 @@ anyhow = "1"
 blake3 = "1.5"
 sha1 = "0.10"
 sha2 = "0.10"
+argon2 = "0.5"           # Secure password hashing
+rand = "0.8"             # Cryptographic RNG for tokens
+subtle = "2"             # Constant-time comparison
 
 # Compression (for pack files)
 flate2 = "1"

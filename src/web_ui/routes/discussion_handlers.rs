@@ -11,7 +11,7 @@ use tera::Context;
 
 use crate::api::AppState;
 use crate::db::entities::{discussion, discussion_comment, discussion_event, user};
-use super::utils::{render_template, render_error, add_user_to_context, get_current_user, format_relative_time};
+use super::utils::{render_template, render_error, add_user_to_context, add_csrf_to_context, get_current_user, get_session_token, verify_csrf_token, format_relative_time};
 
 /// Discussion info for templates
 #[derive(serde::Serialize)]
@@ -43,12 +43,14 @@ struct TimelineItem {
 pub struct NewDiscussionForm {
     pub title: String,
     pub content: String,
+    pub csrf_token: String,
 }
 
 /// Form for posting a comment
 #[derive(serde::Deserialize)]
 pub struct NewCommentForm {
     pub content: String,
+    pub csrf_token: String,
 }
 
 /// List discussions for a repo
@@ -136,6 +138,7 @@ pub async fn new_discussion_page(
     context.insert("full_name", &full_name);
     context.insert("current_user", &current_user);
     context.insert("active_tab", "community");
+    add_csrf_to_context(&mut context, &headers).await;
 
     render_template("new_discussion.html", &context)
 }
@@ -149,6 +152,12 @@ pub async fn create_discussion(
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
     let full_name = format!("{}/{}", owner, repo_name);
+
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return render_error("Invalid request. Please try again.");
+    }
 
     let current_user = match get_current_user(&state, &headers).await {
         Some(u) => u,
@@ -316,6 +325,7 @@ pub async fn discussion_detail(
     context.insert("active_tab", "community");
 
     add_user_to_context(&mut context, &state, &headers).await;
+    add_csrf_to_context(&mut context, &headers).await;
 
     render_template("discussion.html", &context)
 }
@@ -329,6 +339,12 @@ pub async fn post_comment(
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
     let full_name = format!("{}/{}", owner, repo_name);
+
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return render_error("Invalid request. Please try again.");
+    }
 
     let current_user = match get_current_user(&state, &headers).await {
         Some(u) => u,
