@@ -12,10 +12,14 @@ use std::sync::Arc;
 
 use axum::{
     extract::DefaultBodyLimit,
+    http::header::{HeaderName, HeaderValue},
     routing::{delete, get, post},
     Router,
 };
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    trace::TraceLayer,
+    set_header::SetResponseHeaderLayer,
+};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use api::AppState;
@@ -98,7 +102,28 @@ async fn main() {
         .with_state(state)
         // Allow large file uploads (10GB limit)
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024 * 1024))
-        .layer(TraceLayer::new_for_http());
+        .layer(TraceLayer::new_for_http())
+        // Security headers
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("x-xss-protection"),
+            HeaderValue::from_static("1; mode=block"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static("default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data:; font-src 'self'; frame-ancestors 'none';"),
+        ));
 
     // Start server
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));

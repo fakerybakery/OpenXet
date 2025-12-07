@@ -491,11 +491,11 @@ pub async fn pr_detail(
             .replace('>', "&gt;")
     }
 
-    // Check if current user can merge
+    // Check if current user can merge (must have write permission)
     let current_user = get_current_user(&state, &headers).await;
     let can_merge = if let Some(ref user) = current_user {
-        // Owner or author can merge
-        user == &owner || user == &author
+        // Only users with write access can merge PRs
+        can_user_write_repo(&state, user, &owner).await
     } else {
         false
     };
@@ -673,17 +673,10 @@ pub async fn merge_pr(
         return render_error("Can only merge open pull requests");
     }
 
-    // Check permission (owner or author)
-    let pr_author = user::Entity::find_by_id(pr.author_id)
-        .one(db.as_ref())
-        .await
-        .ok()
-        .flatten()
-        .map(|u| u.username)
-        .unwrap_or_default();
-
-    if current_user != owner && current_user != pr_author {
-        return render_error("Only the repository owner or PR author can merge");
+    // SECURITY: Only users with write permission can merge PRs
+    // PR authors cannot merge their own PRs unless they have write access
+    if !can_user_write_repo(&state, &current_user, &owner).await {
+        return render_error("You don't have permission to merge pull requests in this repository. Only repository owners and organization members can merge.");
     }
 
     // Perform the merge by updating target branch to source commit

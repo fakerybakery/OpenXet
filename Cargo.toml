@@ -9,7 +9,7 @@ description = "A secure Git-Xet server using pure Rust libraries"
 axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.4"
-tower-http = { version = "0.5", features = ["trace", "cors"] }
+tower-http = { version = "0.5", features = ["trace", "cors", "set-header"] }
 hyper = { version = "1", features = ["full"] }
 
 # Serialization

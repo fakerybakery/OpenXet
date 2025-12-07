@@ -24,7 +24,7 @@ pub struct LoginForm {
 pub struct SignupForm {
     pub username: String,
     pub password: String,
-    pub email: Option<String>,
+    pub email: String,
     pub csrf_token: String,
 }
 
@@ -61,7 +61,7 @@ pub async fn login_submit(
             Response::builder()
                 .status(StatusCode::SEE_OTHER)
                 .header("Location", "/")
-                .header("Set-Cookie", format!("token={}; Path=/; HttpOnly; SameSite=Lax", token.token))
+                .header("Set-Cookie", format!("token={}; Path=/; HttpOnly; SameSite=Lax; Secure", token.token))
                 .body(axum::body::Body::empty())
                 .unwrap()
         }
@@ -107,7 +107,16 @@ pub async fn signup_submit(
         return Redirect::to("/-/signup?error=Username+can+only+contain+letters,+numbers,+dashes,+and+underscores").into_response();
     }
 
-    match state.auth.register_user(&form.username, &form.password, form.email.as_deref()).await {
+    // Validate email
+    let email = form.email.trim();
+    if email.is_empty() {
+        return Redirect::to("/-/signup?error=Email+is+required").into_response();
+    }
+    if !email.contains('@') || !email.contains('.') || email.len() < 5 {
+        return Redirect::to("/-/signup?error=Please+enter+a+valid+email+address").into_response();
+    }
+
+    match state.auth.register_user(&form.username, &form.password, Some(email)).await {
         Ok(_) => {
             Redirect::to("/-/login?message=Account+created!+Please+log+in.").into_response()
         }
@@ -123,7 +132,7 @@ pub async fn logout() -> Response {
     Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header("Location", "/")
-        .header("Set-Cookie", "token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+        .header("Set-Cookie", "token=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0")
         .body(axum::body::Body::empty())
         .unwrap()
 }

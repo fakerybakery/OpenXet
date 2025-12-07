@@ -242,6 +242,9 @@ pub async fn get_trending_repos(db: &sea_orm::DatabaseConnection, limit: u64) ->
         like_count: i64,
     }
 
+    // SECURITY: Sanitize limit to prevent SQL injection - clamp to reasonable range
+    let safe_limit = limit.min(100).max(1);
+
     // Get repos with most likes
     let results = db.query_all(Statement::from_string(
         db.get_database_backend(),
@@ -253,7 +256,7 @@ pub async fn get_trending_repos(db: &sea_orm::DatabaseConnection, limit: u64) ->
             ORDER BY like_count DESC
             LIMIT {}
             "#,
-            limit
+            safe_limit
         ),
     ))
     .await
