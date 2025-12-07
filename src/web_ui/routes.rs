@@ -22,6 +22,12 @@ mod repo_handlers;
 mod edit_handlers;
 mod discussion_handlers;
 mod org_handlers;
+mod like_handlers;
+mod pr_handlers;
+mod trending_handlers;
+
+// Re-export for use by other handlers
+pub use like_handlers::{get_like_count, has_user_liked};
 
 /// Create the web UI router with GitHub-like routes
 ///
@@ -45,9 +51,10 @@ pub fn create_router() -> Router<Arc<AppState>> {
         // Organization management
         .route("/-/new-org", get(org_handlers::new_org_page).post(org_handlers::create_org))
 
-        // Stats and search
+        // Stats, search, and trending
         .route("/-/stats", get(home_handlers::stats))
         .route("/-/search", get(home_handlers::search))
+        .route("/-/trending", get(trending_handlers::trending_page))
 
         // User/org profile page (must come before /:owner/:repo)
         .route("/:owner", get(home_handlers::user_profile))
@@ -71,10 +78,28 @@ pub fn create_router() -> Router<Arc<AppState>> {
         .route("/:owner/:repo/commits/:ref", get(repo_handlers::commits_list))
         .route("/:owner/:repo/commit/:sha", get(repo_handlers::commit_view))
 
-        // Community discussions
+        // Community (combined PRs + discussions)
+        .route("/:owner/:repo/community", get(discussion_handlers::community_page))
+
+        // Discussions (individual pages still work)
         .route("/:owner/:repo/discussions", get(discussion_handlers::discussions_list))
         .route("/:owner/:repo/discussions/new", get(discussion_handlers::new_discussion_page).post(discussion_handlers::create_discussion))
         .route("/:owner/:repo/discussions/:id", get(discussion_handlers::discussion_detail).post(discussion_handlers::post_comment))
         .route("/:owner/:repo/discussions/:id/close", axum::routing::post(discussion_handlers::close_discussion))
         .route("/:owner/:repo/discussions/:id/reopen", axum::routing::post(discussion_handlers::reopen_discussion))
+
+        // Pull requests
+        .route("/:owner/:repo/pulls", get(pr_handlers::pr_list))
+
+        // Branch management
+        .route("/:owner/:repo/branches/new", axum::routing::post(repo_handlers::create_branch))
+        .route("/:owner/:repo/pulls/new", get(pr_handlers::new_pr_page).post(pr_handlers::create_pr))
+        .route("/:owner/:repo/pulls/:number", get(pr_handlers::pr_detail).post(pr_handlers::post_pr_comment))
+        .route("/:owner/:repo/pulls/:number/close", axum::routing::post(pr_handlers::close_pr))
+        .route("/:owner/:repo/pulls/:number/reopen", axum::routing::post(pr_handlers::reopen_pr))
+        .route("/:owner/:repo/pulls/:number/merge", axum::routing::post(pr_handlers::merge_pr))
+
+        // Likes/stars
+        .route("/:owner/:repo/like", axum::routing::post(like_handlers::like_repo))
+        .route("/:owner/:repo/unlike", axum::routing::post(like_handlers::unlike_repo))
 }

@@ -31,6 +31,7 @@
 </div>
 
 <form method="POST" action="/{{ full_name }}/{% if is_new %}new{% else %}edit{% endif %}/{{ ref_name }}{% if path %}/{{ path }}{% endif %}" id="edit-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="card">
         <div class="file-header">
             <input type="text" name="filename" class="input" style="flex: 1; max-width: 400px;" value="{{ path }}" placeholder="path/to/file.txt" />

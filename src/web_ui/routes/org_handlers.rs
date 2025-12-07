@@ -27,6 +27,12 @@ pub struct AddMemberForm {
     pub csrf_token: String,
 }
 
+/// Form for removing a member (CSRF only)
+#[derive(serde::Deserialize)]
+pub struct RemoveMemberForm {
+    pub csrf_token: String,
+}
+
 /// New repository page (GET)
 pub async fn new_repo_page(
     State(state): State<Arc<AppState>>,
@@ -368,7 +374,14 @@ pub async fn remove_org_member(
     State(state): State<Arc<AppState>>,
     Path((org_name, username)): Path<(String, String)>,
     headers: HeaderMap,
+    Form(form): Form<RemoveMemberForm>,
 ) -> Response {
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return render_error("Invalid request. Please try again.");
+    }
+
     let db = match &state.db {
         Some(db) => db,
         None => return render_error("Database not available"),

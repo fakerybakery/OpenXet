@@ -205,3 +205,26 @@ pub struct Breadcrumb {
 pub struct BranchInfo {
     pub name: String,
 }
+
+/// Check if a user can write to a repository (is owner or org member)
+/// Returns true if user owns the repo or is a member of the org that owns it
+pub async fn can_user_write_repo(state: &AppState, username: &str, repo_owner: &str) -> bool {
+    // User owns the repo directly
+    if username == repo_owner {
+        return true;
+    }
+
+    // Check if repo_owner is an org and user is a member
+    if let Ok(Some(owner)) = state.auth.get_user_by_username(repo_owner).await {
+        if owner.is_org {
+            // Get user ID
+            if let Ok(Some(user)) = state.auth.get_user_by_username(username).await {
+                if let Ok(is_member) = state.auth.is_org_member(owner.id, user.id).await {
+                    return is_member;
+                }
+            }
+        }
+    }
+
+    false
+}

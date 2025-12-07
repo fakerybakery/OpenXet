@@ -1,0 +1,64 @@
+{% extends "repo_base.html" %}
+
+{% block title %}Pull Requests - {{ full_name }}{% endblock %}
+
+{% block header_actions %}
+{% if current_user %}
+<a href="/{{ full_name }}/pulls/new" class="btn btn-primary">New Pull Request</a>
+{% endif %}
+{% endblock %}
+
+{% block repo_content %}
+<div class="flex items-center gap-3 mb-3">
+    <span class="text-sm">
+        <strong class="text-success">{{ open_count }}</strong> Open
+    </span>
+    <span class="text-sm text-secondary">
+        {{ closed_count }} Closed
+    </span>
+</div>
+
+{% if pull_requests %}
+<div class="card">
+    <ul class="list">
+        {% for pr in pull_requests %}
+        <li class="list-item" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+            <div class="flex items-center gap-2 w-full">
+                {% if pr.status == "open" %}
+                <svg class="icon text-success" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink: 0;">
+                    <path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/>
+                </svg>
+                {% elif pr.status == "merged" %}
+                <svg class="icon" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink: 0; color: var(--purple);">
+                    <path d="M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8.5-4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 3.25a.75.75 0 1 0 0 .005V3.25Z"/>
+                </svg>
+                {% else %}
+                <svg class="icon text-error" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink: 0;">
+                    <path d="M3.25 1A2.25 2.25 0 0 1 4 5.372v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.251 2.251 0 0 1 3.25 1Zm9.5 5.5a.75.75 0 0 1 .75.75v3.378a2.251 2.251 0 1 1-1.5 0V7.25a.75.75 0 0 1 .75-.75Zm-2.03-5.273a.75.75 0 0 1 1.06 0l2 2a.75.75 0 0 1 0 1.06l-2 2a.75.75 0 0 1-1.06-1.06l1.22-1.22-1.22-1.22a.75.75 0 0 1 0-1.06ZM3.25 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm9.5 0a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/>
+                </svg>
+                {% endif %}
+                <a href="/{{ full_name }}/pulls/{{ pr.number }}" class="flex-1 font-medium">{{ pr.title }}</a>
+                {% if pr.comment_count > 0 %}
+                <span class="badge">{{ pr.comment_count }}</span>
+                {% endif %}
+            </div>
+            <div class="text-xs text-muted" style="margin-left: 26px;">
+                #{{ pr.number }} &middot; {{ pr.author }} wants to merge <code>{{ pr.source_branch }}</code> into <code>{{ pr.target_branch }}</code> &middot; {{ pr.created_at }}
+            </div>
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% else %}
+<div class="card">
+    <div class="empty">
+        <p class="mb-3">No pull requests yet</p>
+        {% if current_user %}
+        <a href="/{{ full_name }}/pulls/new" class="btn btn-primary">Create a pull request</a>
+        {% else %}
+        <p class="text-sm text-secondary">Sign in to create a pull request</p>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+{% endblock repo_content %}

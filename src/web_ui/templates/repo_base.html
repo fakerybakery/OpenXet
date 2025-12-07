@@ -33,7 +33,7 @@
     <a href="/{{ full_name }}?tab=overview&branch={{ current_ref }}" class="tab {% if tab == 'overview' %}active{% endif %}">Overview</a>
     <a href="/{{ full_name }}?tab=files&branch={{ current_ref }}" class="tab {% if tab == 'files' %}active{% endif %}">Files</a>
     <a href="/{{ full_name }}/commits/{{ current_ref }}" class="tab {% if tab == 'commits' %}active{% endif %}">Commits</a>
-    <a href="/{{ full_name }}/discussions" class="tab {% if tab == 'community' %}active{% endif %}">Community</a>
+    <a href="/{{ full_name }}/community" class="tab {% if tab == 'community' or tab == 'pull_requests' %}active{% endif %}">Community</a>
 </div>
 
 {% block repo_content %}{% endblock %}
@@ -41,7 +41,7 @@
 <script>
 function handleBranchChange(branch) {
     {% block branch_change_handler %}
-    window.location.href = '/{{ full_name }}?tab={{ active_tab | default(value="overview") }}&branch=' + branch;
+    window.location.href = '/{{ full_name | safe }}?tab={{ active_tab | default(value="overview") }}&branch=' + branch;
     {% endblock %}
 }
 </script>

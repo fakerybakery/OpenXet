@@ -53,6 +53,135 @@ pub struct NewCommentForm {
     pub csrf_token: String,
 }
 
+/// Form for close/reopen actions (CSRF only)
+#[derive(serde::Deserialize)]
+pub struct StatusChangeForm {
+    pub csrf_token: String,
+}
+
+/// Combined community page showing both PRs and discussions
+pub async fn community_page(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    use crate::db::entities::{pull_request, pr_comment};
+
+    let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
+
+    if state.repos.get_repo(&full_name).is_err() {
+        return render_error(&format!("Repository '{}' not found", full_name));
+    }
+
+    let db = match &state.db {
+        Some(db) => db,
+        None => return render_error("Database not available"),
+    };
+
+    // Get pull requests (limit to recent 10)
+    let prs = pull_request::Entity::find()
+        .filter(pull_request::Column::RepoName.eq(&full_name))
+        .order_by_desc(pull_request::Column::UpdatedAt)
+        .all(db.as_ref())
+        .await
+        .unwrap_or_default();
+
+    let open_pr_count = prs.iter().filter(|pr| pr.status == "open").count();
+    let closed_pr_count = prs.len() - open_pr_count;
+
+    #[derive(serde::Serialize)]
+    struct PrInfo {
+        number: i32,
+        title: String,
+        author: String,
+        status: String,
+        source_branch: String,
+        target_branch: String,
+        comment_count: usize,
+        created_at: String,
+    }
+
+    let mut pr_infos = Vec::new();
+    for pr in prs.iter().take(10) {
+        let author = user::Entity::find_by_id(pr.author_id)
+            .one(db.as_ref())
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.username)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let comment_count = pr_comment::Entity::find()
+            .filter(pr_comment::Column::PrId.eq(pr.id))
+            .count(db.as_ref())
+            .await
+            .unwrap_or(0) as usize;
+
+        pr_infos.push(PrInfo {
+            number: pr.number,
+            title: pr.title.clone(),
+            author,
+            status: pr.status.clone(),
+            source_branch: pr.source_branch.clone(),
+            target_branch: pr.target_branch.clone(),
+            comment_count,
+            created_at: format_relative_time(pr.created_at),
+        });
+    }
+
+    // Get discussions (limit to recent 10)
+    let discussions = discussion::Entity::find()
+        .filter(discussion::Column::RepoName.eq(&full_name))
+        .order_by_desc(discussion::Column::UpdatedAt)
+        .all(db.as_ref())
+        .await
+        .unwrap_or_default();
+
+    let mut discussion_infos = Vec::new();
+    for disc in discussions.iter().take(10) {
+        let author = user::Entity::find_by_id(disc.author_id)
+            .one(db.as_ref())
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.username)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let comment_count = discussion_comment::Entity::find()
+            .filter(discussion_comment::Column::DiscussionId.eq(disc.id))
+            .count(db.as_ref())
+            .await
+            .unwrap_or(0) as usize;
+
+        discussion_infos.push(DiscussionInfo {
+            id: disc.id,
+            title: disc.title.clone(),
+            author,
+            status: disc.status.clone(),
+            comment_count,
+            created_at: format_relative_time(disc.created_at),
+            updated_at: format_relative_time(disc.updated_at),
+        });
+    }
+
+    let mut context = Context::new();
+    context.insert("owner", &owner);
+    context.insert("repo_name", repo_name);
+    context.insert("full_name", &full_name);
+    context.insert("pull_requests", &pr_infos);
+    context.insert("open_pr_count", &open_pr_count);
+    context.insert("closed_pr_count", &closed_pr_count);
+    context.insert("discussions", &discussion_infos);
+    context.insert("discussion_count", &discussions.len());
+    context.insert("active_tab", "community");
+
+    add_user_to_context(&mut context, &state, &headers).await;
+    add_csrf_to_context(&mut context, &headers).await;
+
+    render_template("community.html", &context)
+}
+
 /// List discussions for a repo
 pub async fn discussions_list(
     State(state): State<Arc<AppState>>,
@@ -401,7 +530,13 @@ pub async fn close_discussion(
     State(state): State<Arc<AppState>>,
     Path((owner, repo, id)): Path<(String, String, i32)>,
     headers: HeaderMap,
+    Form(form): Form<StatusChangeForm>,
 ) -> Response {
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return super::utils::render_error("Invalid request. Please try again.");
+    }
     update_discussion_status(state, &owner, &repo, id, "closed", &headers).await
 }
 
@@ -410,7 +545,13 @@ pub async fn reopen_discussion(
     State(state): State<Arc<AppState>>,
     Path((owner, repo, id)): Path<(String, String, i32)>,
     headers: HeaderMap,
+    Form(form): Form<StatusChangeForm>,
 ) -> Response {
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return super::utils::render_error("Invalid request. Please try again.");
+    }
     update_discussion_status(state, &owner, &repo, id, "open", &headers).await
 }
 

@@ -418,11 +418,253 @@
             border-radius: var(--radius-sm);
             color: var(--text-primary);
         }
+
+        /* ===== UI Components ===== */
+
+        /* Dropdown Component */
+        .dropdown {
+            position: relative;
+            display: inline-block;
+        }
+        .dropdown-trigger {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            height: 34px;
+            padding: 0 10px 0 12px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            color: var(--text-primary);
+            font-size: 13px;
+            font-family: inherit;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .dropdown-trigger:hover {
+            background: var(--bg-hover);
+            border-color: #3a3a3a;
+        }
+        .dropdown-trigger .dropdown-icon {
+            width: 16px;
+            height: 16px;
+            color: var(--text-muted);
+            transition: transform 0.15s ease;
+        }
+        .dropdown.open .dropdown-trigger .dropdown-icon {
+            transform: rotate(180deg);
+        }
+        .dropdown-menu {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            min-width: 220px;
+            max-height: 320px;
+            overflow-y: auto;
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            z-index: 1000;
+            display: none;
+        }
+        .dropdown-menu.align-right {
+            left: auto;
+            right: 0;
+        }
+        .dropdown.open .dropdown-menu {
+            display: block;
+        }
+        .dropdown-header {
+            padding: 8px 12px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border);
+        }
+        .dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            font-size: 13px;
+            color: var(--text-primary);
+            cursor: pointer;
+            text-decoration: none;
+        }
+        .dropdown-item:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+        .dropdown-item.active {
+            background: rgba(88, 166, 255, 0.1);
+        }
+        .dropdown-item.active::before {
+            content: '';
+            width: 4px;
+            height: 4px;
+            background: var(--accent);
+            border-radius: 50%;
+            margin-right: 4px;
+        }
+        .dropdown-item .item-icon {
+            width: 16px;
+            height: 16px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+        .dropdown-item .item-label {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .dropdown-item .item-meta {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+        .dropdown-divider {
+            height: 1px;
+            background: var(--border);
+            margin: 4px 0;
+        }
+        .dropdown-search {
+            padding: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+        .dropdown-search input {
+            width: 100%;
+            height: 30px;
+            padding: 0 10px;
+            background: var(--bg-page);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-size: 13px;
+            font-family: inherit;
+        }
+        .dropdown-search input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        .dropdown-search input::placeholder {
+            color: var(--text-muted);
+        }
+        .dropdown-footer {
+            padding: 8px;
+            border-top: 1px solid var(--border);
+            background: var(--bg-elevated);
+        }
+        .dropdown-empty {
+            padding: 16px 12px;
+            text-align: center;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        /* Modal Component */
+        .modal-backdrop {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            z-index: 2000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-backdrop.open {
+            display: flex;
+        }
+        .modal {
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            width: 100%;
+            max-width: 440px;
+            max-height: 90vh;
+            overflow: hidden;
+            box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+        }
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        .modal-title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .modal-close {
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            border: none;
+            border-radius: var(--radius-sm);
+            color: var(--text-muted);
+            cursor: pointer;
+        }
+        .modal-close:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+        .modal-body {
+            padding: 16px;
+            overflow-y: auto;
+        }
+        .modal-footer {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+            padding: 12px 16px;
+            border-top: 1px solid var(--border);
+            background: var(--bg-elevated);
+        }
+
+        /* Form Group */
+        .form-group {
+            margin-bottom: 16px;
+        }
+        .form-group:last-child {
+            margin-bottom: 0;
+        }
+        .form-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+        .form-hint {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+        .form-static {
+            padding: 8px 12px;
+            background: var(--bg-elevated);
+            border-radius: var(--radius-sm);
+            font-family: monospace;
+            font-size: 13px;
+        }
     </style>
 </head>
 <body>
     <header class="header">
         <a href="/" class="logo">OpenXet</a>
+        <nav class="nav">
+            <a href="/-/trending">Trending</a>
+        </nav>
         <div class="search-container">
             <svg class="search-icon" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0Zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04a.75.75 0 1 1-1.06 1.06l-3.04-3.04Z"/>

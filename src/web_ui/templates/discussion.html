@@ -7,6 +7,7 @@
 {% block header_actions %}
 {% if current_user and current_user == owner %}
 <form method="POST" action="/{{ full_name }}/discussions/{{ discussion_id }}/{% if discussion_status == 'open' %}close{% else %}reopen{% endif %}" style="margin: 0;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     {% if discussion_status == "open" %}
     <button type="submit" class="btn">Close</button>
     {% else %}
@@ -94,6 +95,7 @@
 <div class="card mt-4">
     <div class="card-header">Reply</div>
     <form method="POST" action="/{{ full_name }}/discussions/{{ discussion_id }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="card-body">
             <textarea name="content" placeholder="Write a reply..." required class="input" style="min-height: 100px;"></textarea>
         </div>

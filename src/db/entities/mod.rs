@@ -13,6 +13,10 @@ pub mod file_segment;
 pub mod discussion;
 pub mod discussion_comment;
 pub mod discussion_event;
+pub mod repo_like;
+pub mod pull_request;
+pub mod pr_comment;
+pub mod pr_event;
 
 // Re-export entities for convenient access (may not all be used yet)
 #[allow(unused_imports)]
@@ -41,3 +45,11 @@ pub use discussion::Entity as Discussion;
 pub use discussion_comment::Entity as DiscussionComment;
 #[allow(unused_imports)]
 pub use discussion_event::Entity as DiscussionEvent;
+#[allow(unused_imports)]
+pub use repo_like::Entity as RepoLike;
+#[allow(unused_imports)]
+pub use pull_request::Entity as PullRequest;
+#[allow(unused_imports)]
+pub use pr_comment::Entity as PrComment;
+#[allow(unused_imports)]
+pub use pr_event::Entity as PrEvent;

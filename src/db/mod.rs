@@ -311,6 +311,121 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
         r#"CREATE INDEX IF NOT EXISTS idx_events_discussion ON discussion_events(discussion_id)"#.to_string(),
     )).await?;
 
+    // Repository likes/stars table
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"
+        CREATE TABLE IF NOT EXISTS repo_likes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            repo_name TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            UNIQUE(repo_name, user_id)
+        )
+        "#.to_string(),
+    )).await?;
+
+    // Create indexes for like lookups
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_likes_repo ON repo_likes(repo_name)"#.to_string(),
+    )).await?;
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_likes_user ON repo_likes(user_id)"#.to_string(),
+    )).await?;
+
+    // Pull requests table
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"
+        CREATE TABLE IF NOT EXISTS pull_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            repo_name TEXT NOT NULL,
+            number INTEGER NOT NULL,
+            author_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            source_branch TEXT NOT NULL,
+            target_branch TEXT NOT NULL,
+            source_commit TEXT,
+            target_commit TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            merged_by INTEGER,
+            merged_at INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (merged_by) REFERENCES users(id) ON DELETE SET NULL,
+            UNIQUE(repo_name, number)
+        )
+        "#.to_string(),
+    )).await?;
+
+    // Create indexes for PR lookups
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_prs_repo ON pull_requests(repo_name)"#.to_string(),
+    )).await?;
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_prs_author ON pull_requests(author_id)"#.to_string(),
+    )).await?;
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_prs_status ON pull_requests(status)"#.to_string(),
+    )).await?;
+
+    // PR comments table (for review comments)
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"
+        CREATE TABLE IF NOT EXISTS pr_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pr_id INTEGER NOT NULL,
+            author_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            file_path TEXT,
+            line_number INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (pr_id) REFERENCES pull_requests(id) ON DELETE CASCADE,
+            FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        "#.to_string(),
+    )).await?;
+
+    // Create index for PR comment lookups
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_pr_comments_pr ON pr_comments(pr_id)"#.to_string(),
+    )).await?;
+
+    // PR events table (for tracking status changes)
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"
+        CREATE TABLE IF NOT EXISTS pr_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pr_id INTEGER NOT NULL,
+            actor_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            old_value TEXT,
+            new_value TEXT,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (pr_id) REFERENCES pull_requests(id) ON DELETE CASCADE,
+            FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        "#.to_string(),
+    )).await?;
+
+    // Create index for PR event lookups
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_pr_events_pr ON pr_events(pr_id)"#.to_string(),
+    )).await?;
+
     tracing::info!("Database tables initialized");
     Ok(())
 }

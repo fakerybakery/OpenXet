@@ -1,0 +1,53 @@
+{% extends "repo_base.html" %}
+
+{% block title %}New Pull Request - {{ full_name }}{% endblock %}
+
+{% block header_actions %}{% endblock %}
+
+{% block repo_content %}
+<div class="card">
+    <div class="card-header">Create Pull Request</div>
+    <div class="card-body">
+        <form method="post" action="/{{ full_name }}/pulls/new">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <div class="flex items-center gap-3 mb-4">
+                <div class="flex items-center gap-2">
+                    <label class="text-sm text-secondary">From:</label>
+                    <select name="source_branch" class="select" required>
+                        {% for branch in branches %}
+                        <option value="{{ branch }}">{{ branch }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <svg class="icon text-muted" viewBox="0 0 16 16" fill="currentColor">
+                    <path fill-rule="evenodd" d="M8.22 2.97a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06l2.97-2.97H3.75a.75.75 0 010-1.5h7.44L8.22 4.03a.75.75 0 010-1.06z"/>
+                </svg>
+                <div class="flex items-center gap-2">
+                    <label class="text-sm text-secondary">Into:</label>
+                    <select name="target_branch" class="select" required>
+                        {% for branch in branches %}
+                        <option value="{{ branch }}" {% if branch == default_branch %}selected{% endif %}>{{ branch }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label class="text-sm text-secondary mb-1" style="display: block;">Title</label>
+                <input type="text" name="title" class="input" placeholder="Pull request title" required>
+            </div>
+
+            <div class="mb-4">
+                <label class="text-sm text-secondary mb-1" style="display: block;">Description</label>
+                <textarea name="description" class="input" rows="6" placeholder="Describe the changes in this pull request..."></textarea>
+            </div>
+
+            <div class="flex items-center gap-2">
+                <button type="submit" class="btn btn-success">Create Pull Request</button>
+                <a href="/{{ full_name }}/pulls" class="btn">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock repo_content %}

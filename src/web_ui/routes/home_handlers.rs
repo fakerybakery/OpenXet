@@ -11,7 +11,8 @@ use tera::Context;
 
 use crate::api::AppState;
 use crate::db::entities::{org_member, user};
-use super::utils::{render_template, render_error, add_user_to_context, format_size};
+use super::utils::{render_template, render_error, add_user_to_context, add_csrf_to_context, format_size, get_current_user};
+use super::like_handlers::{get_like_count, has_user_liked};
 
 /// Member info for templates
 #[derive(serde::Serialize)]
@@ -180,6 +181,7 @@ pub async fn user_profile(
     }
 
     add_user_to_context(&mut context, &state, &headers).await;
+    add_csrf_to_context(&mut context, &headers).await;
 
     render_template("user.html", &context)
 }
@@ -266,7 +268,35 @@ pub async fn repo_detail(
         }
     }
 
+    // Add like count and user's like status
+    let current_user = super::utils::get_current_user(&state, &headers).await;
+
+    if let Some(db) = &state.db {
+        let like_count = get_like_count(db.as_ref(), &full_name).await;
+        context.insert("like_count", &like_count);
+
+        if let Some(ref username) = current_user {
+            if let Ok(Some(user_record)) = user::Entity::find()
+                .filter(user::Column::Username.eq(username))
+                .one(db.as_ref())
+                .await
+            {
+                let user_has_liked = has_user_liked(db.as_ref(), &full_name, user_record.id).await;
+                context.insert("user_has_liked", &user_has_liked);
+            }
+        }
+    }
+
+    // Check if current user can write to this repo (for showing branch creation UI)
+    let can_write = if let Some(ref username) = current_user {
+        super::utils::can_user_write_repo(&state, username, &owner).await
+    } else {
+        false
+    };
+    context.insert("can_write", &can_write);
+
     add_user_to_context(&mut context, &state, &headers).await;
+    add_csrf_to_context(&mut context, &headers).await;
 
     render_template("repo.html", &context)
 }

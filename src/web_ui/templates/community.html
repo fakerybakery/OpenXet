@@ -1,0 +1,107 @@
+{% extends "repo_base.html" %}
+
+{% block title %}Community - {{ full_name }}{% endblock %}
+
+{% block header_actions %}
+<div class="flex items-center gap-2">
+    {% if current_user %}
+    <a href="/{{ full_name }}/pulls/new" class="btn btn-primary btn-sm">New Pull Request</a>
+    <a href="/{{ full_name }}/discussions/new" class="btn btn-sm">New Discussion</a>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block repo_content %}
+<!-- Pull Requests Section -->
+<div class="mb-4">
+    <div class="flex items-center justify-between mb-2">
+        <h2 style="font-size: 14px; font-weight: 600;">Pull Requests</h2>
+        <div class="flex items-center gap-3 text-sm">
+            <span><strong class="text-success">{{ open_pr_count }}</strong> Open</span>
+            <span class="text-secondary">{{ closed_pr_count }} Closed</span>
+        </div>
+    </div>
+
+    {% if pull_requests %}
+    <div class="card">
+        <ul class="list">
+            {% for pr in pull_requests %}
+            <li class="list-item" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+                <div class="flex items-center gap-2 w-full">
+                    {% if pr.status == "open" %}
+                    <svg class="icon-sm text-success" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink: 0;">
+                        <path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/>
+                    </svg>
+                    {% elif pr.status == "merged" %}
+                    <svg class="icon-sm" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink: 0; color: var(--purple);">
+                        <path d="M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8.5-4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 3.25a.75.75 0 1 0 0 .005V3.25Z"/>
+                    </svg>
+                    {% else %}
+                    <svg class="icon-sm text-error" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink: 0;">
+                        <path d="M3.25 1A2.25 2.25 0 0 1 4 5.372v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.251 2.251 0 0 1 3.25 1Zm9.5 5.5a.75.75 0 0 1 .75.75v3.378a2.251 2.251 0 1 1-1.5 0V7.25a.75.75 0 0 1 .75-.75Zm-2.03-5.273a.75.75 0 0 1 1.06 0l2 2a.75.75 0 0 1 0 1.06l-2 2a.75.75 0 0 1-1.06-1.06l1.22-1.22-1.22-1.22a.75.75 0 0 1 0-1.06ZM3.25 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm9.5 0a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/>
+                    </svg>
+                    {% endif %}
+                    <a href="/{{ full_name }}/pulls/{{ pr.number }}" class="flex-1 font-medium">{{ pr.title }}</a>
+                    {% if pr.comment_count > 0 %}
+                    <span class="badge">{{ pr.comment_count }}</span>
+                    {% endif %}
+                </div>
+                <div class="text-xs text-muted" style="margin-left: 22px;">
+                    #{{ pr.number }} &middot; {{ pr.author }} &middot; <code>{{ pr.source_branch }}</code> &rarr; <code>{{ pr.target_branch }}</code> &middot; {{ pr.created_at }}
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% else %}
+    <div class="card">
+        <div class="empty" style="padding: 20px;">
+            <p class="text-sm text-secondary">No pull requests yet</p>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Discussions Section -->
+<div>
+    <div class="flex items-center justify-between mb-2">
+        <h2 style="font-size: 14px; font-weight: 600;">Discussions</h2>
+        <span class="text-sm text-secondary">{{ discussion_count }} discussion{% if discussion_count != 1 %}s{% endif %}</span>
+    </div>
+
+    {% if discussions %}
+    <div class="card">
+        <ul class="list">
+            {% for disc in discussions %}
+            <li class="list-item" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+                <div class="flex items-center gap-2 w-full">
+                    {% if disc.status == "open" %}
+                    <svg class="icon-sm text-success" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink: 0;">
+                        <path d="M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/>
+                        <path d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z"/>
+                    </svg>
+                    {% else %}
+                    <svg class="icon-sm" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink: 0; color: var(--purple);">
+                        <path d="M11.28 6.78a.75.75 0 00-1.06-1.06L7.25 8.69 5.78 7.22a.75.75 0 00-1.06 1.06l2 2a.75.75 0 001.06 0l3.5-3.5z"/>
+                        <path d="M16 8A8 8 0 110 8a8 8 0 0116 0zm-1.5 0a6.5 6.5 0 11-13 0 6.5 6.5 0 0113 0z"/>
+                    </svg>
+                    {% endif %}
+                    <a href="/{{ full_name }}/discussions/{{ disc.id }}" class="flex-1 font-medium">{{ disc.title }}</a>
+                    <span class="badge">{{ disc.comment_count }}</span>
+                </div>
+                <div class="text-xs text-muted" style="margin-left: 22px;">
+                    #{{ disc.id }} &middot; {{ disc.author }} &middot; {{ disc.created_at }}
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% else %}
+    <div class="card">
+        <div class="empty" style="padding: 20px;">
+            <p class="text-sm text-secondary">No discussions yet</p>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock repo_content %}

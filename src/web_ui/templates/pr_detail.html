@@ -1,0 +1,282 @@
+{% extends "repo_base.html" %}
+
+{% block title %}#{{ pr_number }} {{ pr_title }} - {{ full_name }}{% endblock %}
+
+{% block header_actions %}{% endblock %}
+
+{% block repo_content %}
+<style>
+    .pr-header {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        margin-bottom: 20px;
+    }
+    .pr-status-icon {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+    .pr-status-icon.open { background: rgba(52, 211, 153, 0.15); color: var(--success); }
+    .pr-status-icon.merged { background: rgba(167, 139, 250, 0.15); color: var(--purple); }
+    .pr-status-icon.closed { background: rgba(248, 113, 113, 0.15); color: var(--error); }
+    .pr-title { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+    .pr-meta { font-size: 13px; color: var(--text-secondary); }
+    .pr-branch-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        background: var(--bg-elevated);
+        border-radius: var(--radius-sm);
+        font-family: monospace;
+        font-size: 12px;
+    }
+    .timeline-item {
+        display: flex;
+        gap: 12px;
+        padding: 16px 0;
+        border-bottom: 1px solid var(--border-subtle);
+    }
+    .timeline-item:last-child { border-bottom: none; }
+    .timeline-content {
+        flex: 1;
+        min-width: 0;
+    }
+    .timeline-header {
+        font-size: 13px;
+        margin-bottom: 8px;
+    }
+    .timeline-body {
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: 12px 14px;
+        font-size: 14px;
+        line-height: 1.6;
+    }
+    .timeline-event {
+        font-size: 13px;
+        color: var(--text-secondary);
+        padding: 8px 0;
+    }
+    .diff-file {
+        margin-bottom: 16px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+    }
+    .diff-file-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 14px;
+        background: var(--bg-elevated);
+        font-size: 13px;
+        font-family: monospace;
+    }
+    .diff-stats {
+        display: flex;
+        gap: 8px;
+        font-size: 12px;
+    }
+    .diff-add { color: var(--success); }
+    .diff-del { color: var(--error); }
+    .diff-content {
+        font-family: monospace;
+        font-size: 12px;
+        overflow-x: auto;
+    }
+    .diff-content pre {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        border: none;
+        border-radius: 0;
+    }
+    .diff-line { display: block; padding: 0 12px; min-height: 20px; }
+    .diff-line.add { background: rgba(52, 211, 153, 0.1); }
+    .diff-line.del { background: rgba(248, 113, 113, 0.1); }
+    .merge-box {
+        padding: 16px;
+        background: var(--bg-elevated);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        margin-bottom: 20px;
+    }
+</style>
+
+<div class="pr-header">
+    <div class="pr-status-icon {{ pr_status }}">
+        {% if pr_status == "open" %}
+        <svg class="icon" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354Z"/>
+        </svg>
+        {% elif pr_status == "merged" %}
+        <svg class="icon" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218Z"/>
+        </svg>
+        {% else %}
+        <svg class="icon" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M3.25 1A2.25 2.25 0 0 1 4 5.372v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.251 2.251 0 0 1 3.25 1Z"/>
+        </svg>
+        {% endif %}
+    </div>
+    <div class="flex-1">
+        <h1 class="pr-title">{{ pr_title }} <span class="text-muted font-normal">#{{ pr_number }}</span></h1>
+        <div class="pr-meta">
+            {% if pr_status == "open" %}
+            <span class="badge badge-success">Open</span>
+            {% elif pr_status == "merged" %}
+            <span class="badge badge-purple">Merged</span>
+            {% else %}
+            <span class="badge badge-error">Closed</span>
+            {% endif %}
+            <strong>{{ pr_author }}</strong> wants to merge
+            <span class="pr-branch-badge">{{ source_branch }}</span>
+            into
+            <span class="pr-branch-badge">{{ target_branch }}</span>
+            &middot; {{ pr_created }}
+        </div>
+    </div>
+</div>
+
+{% if pr_status == "open" and can_merge %}
+<div class="merge-box">
+    <div class="flex items-center justify-between">
+        <div>
+            <div class="font-medium mb-1">Ready to merge</div>
+            <div class="text-sm text-secondary">This branch has no conflicts with the target branch.</div>
+        </div>
+        <div class="flex items-center gap-2">
+            <form method="post" action="/{{ full_name }}/pulls/{{ pr_number }}/merge" style="display: inline;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="btn btn-success">Merge Pull Request</button>
+            </form>
+            <form method="post" action="/{{ full_name }}/pulls/{{ pr_number }}/close" style="display: inline;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="btn">Close</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% elif pr_status == "closed" and can_merge %}
+<div class="merge-box">
+    <div class="flex items-center justify-between">
+        <div class="text-secondary">This pull request is closed.</div>
+        <form method="post" action="/{{ full_name }}/pulls/{{ pr_number }}/reopen">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn">Reopen</button>
+        </form>
+    </div>
+</div>
+{% elif pr_status == "merged" %}
+<div class="merge-box">
+    <div class="text-secondary">
+        <svg class="icon" viewBox="0 0 16 16" fill="currentColor" style="display: inline; vertical-align: -3px; color: var(--purple);">
+            <path d="M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218Z"/>
+        </svg>
+        This pull request was merged.
+    </div>
+</div>
+{% endif %}
+
+<div class="flex gap-4">
+    <div class="flex-1">
+        <!-- Files Changed -->
+        {% if file_changes %}
+        <div class="card mb-4">
+            <div class="card-header">
+                Files Changed
+                <span class="text-muted font-normal" style="text-transform: none;">
+                    ({{ files_changed }} file{% if files_changed != 1 %}s{% endif %},
+                    <span class="diff-add">+{{ additions }}</span>
+                    <span class="diff-del">-{{ deletions }}</span>)
+                </span>
+            </div>
+            <div class="card-body" style="padding: 12px;">
+                {% for file in file_changes %}
+                <div class="diff-file">
+                    <div class="diff-file-header">
+                        <span>{{ file.path }}</span>
+                        <div class="diff-stats">
+                            <span class="diff-add">+{{ file.additions }}</span>
+                            <span class="diff-del">-{{ file.deletions }}</span>
+                        </div>
+                    </div>
+                    <div class="diff-content">
+                        {{ file.diff_html | safe }}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Timeline -->
+        <div class="card">
+            <div class="card-header">Conversation</div>
+            <div class="card-body" style="padding: 0 16px;">
+                {% for item in timeline %}
+                <div class="timeline-item">
+                    <div class="avatar">{{ item.author | truncate(length=1, end="") | upper }}</div>
+                    <div class="timeline-content">
+                        {% if item.item_type == "comment" or item.item_type == "description" %}
+                        <div class="timeline-header">
+                            <strong>{{ item.author }}</strong>
+                            {% if item.item_type == "description" %}
+                            opened this pull request
+                            {% else %}
+                            commented
+                            {% endif %}
+                            <span class="text-muted">{{ item.created_at }}</span>
+                        </div>
+                        <div class="timeline-body">{{ item.content }}</div>
+                        {% elif item.item_type == "event" %}
+                        <div class="timeline-event">
+                            <strong>{{ item.author }}</strong>
+                            {% if item.event_type == "closed" %}
+                            closed this pull request
+                            {% elif item.event_type == "reopened" %}
+                            reopened this pull request
+                            {% elif item.event_type == "merged" %}
+                            merged this pull request
+                            {% else %}
+                            {{ item.event_type }}
+                            {% endif %}
+                            <span class="text-muted">{{ item.created_at }}</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+
+                {% if timeline | length == 0 %}
+                <div class="empty" style="padding: 24px;">No conversation yet</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Comment Form -->
+        {% if current_user and pr_status != "merged" %}
+        <div class="card mt-4">
+            <div class="card-body">
+                <form method="post" action="/{{ full_name }}/pulls/{{ pr_number }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <div class="flex gap-3">
+                        <div class="avatar">{{ current_user | truncate(length=1, end="") | upper }}</div>
+                        <div class="flex-1">
+                            <textarea name="content" class="input mb-2" rows="3" placeholder="Leave a comment..."></textarea>
+                            <button type="submit" class="btn btn-primary">Comment</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock repo_content %}

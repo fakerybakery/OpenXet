@@ -13,6 +13,7 @@
     <h2 style="font-size: 16px; font-weight: 600; margin-bottom: 16px;">Start a new discussion</h2>
 
     <form method="POST" action="/{{ full_name }}/discussions/new">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="card">
             <div class="card-body">
                 <div class="mb-3">

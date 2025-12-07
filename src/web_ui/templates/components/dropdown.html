@@ -1,0 +1,79 @@
+{#
+  Dropdown Component
+
+  Usage:
+    {% include "components/dropdown.html" %}
+
+  Then in your page, create a dropdown with:
+    <div class="dropdown" id="my-dropdown">
+      <button type="button" class="dropdown-trigger" onclick="toggleDropdown('my-dropdown')">
+        <span>Label</span>
+        <svg class="dropdown-icon" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M4.427 7.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 7H4.604a.25.25 0 00-.177.427z"/>
+        </svg>
+      </button>
+      <div class="dropdown-menu">
+        <div class="dropdown-header">Section</div>
+        <a href="#" class="dropdown-item">Item 1</a>
+        <a href="#" class="dropdown-item active">Item 2 (selected)</a>
+        <div class="dropdown-divider"></div>
+        <a href="#" class="dropdown-item">Item 3</a>
+      </div>
+    </div>
+
+  With search:
+    <div class="dropdown-menu">
+      <div class="dropdown-search">
+        <input type="text" placeholder="Search..." oninput="filterItems(this)">
+      </div>
+      ...
+    </div>
+
+  JavaScript API:
+    toggleDropdown('my-dropdown')  - Toggle open/closed
+    closeAllDropdowns()            - Close all dropdowns
+#}
+
+<script>
+(function() {
+  // Dropdown functions - only define once
+  if (window.toggleDropdown) return;
+
+  window.toggleDropdown = function(id) {
+    var dropdown = document.getElementById(id);
+    if (!dropdown) return;
+
+    var isOpen = dropdown.classList.contains('open');
+    closeAllDropdowns();
+
+    if (!isOpen) {
+      dropdown.classList.add('open');
+      // Focus search input if exists
+      var searchInput = dropdown.querySelector('.dropdown-search input');
+      if (searchInput) {
+        setTimeout(function() { searchInput.focus(); }, 10);
+      }
+    }
+  };
+
+  window.closeAllDropdowns = function() {
+    document.querySelectorAll('.dropdown.open').forEach(function(d) {
+      d.classList.remove('open');
+    });
+  };
+
+  // Close dropdowns when clicking outside
+  document.addEventListener('click', function(e) {
+    if (!e.target.closest('.dropdown')) {
+      closeAllDropdowns();
+    }
+  });
+
+  // Close dropdowns on Escape key
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+      closeAllDropdowns();
+    }
+  });
+})();
+</script>

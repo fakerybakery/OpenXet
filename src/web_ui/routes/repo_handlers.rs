@@ -1,9 +1,9 @@
 //! Repository viewing handlers: tree browsing, blob viewing, and commit history.
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Form, Path, Query, State},
     http::HeaderMap,
-    response::Response,
+    response::{IntoResponse, Redirect, Response},
 };
 use std::sync::Arc;
 use tera::Context;
@@ -12,7 +12,8 @@ use crate::api::AppState;
 use crate::git::{CommitInfo, ObjectId};
 use super::utils::{
     render_template, render_error, add_user_to_context, format_time_ago,
-    BranchInfo, Breadcrumb,
+    BranchInfo, Breadcrumb, get_current_user, get_session_token, verify_csrf_token,
+    can_user_write_repo,
 };
 use super::lfs::{parse_lfs_pointer, check_lfs_file};
 use super::diff::compute_diff;
@@ -480,4 +481,77 @@ pub fn find_and_render_readme(repo: &crate::git::Repository, tree_id: &ObjectId)
     }
 
     None
+}
+
+/// Form for creating a new branch
+#[derive(serde::Deserialize)]
+pub struct NewBranchForm {
+    pub branch_name: String,
+    pub source_branch: String,
+    pub csrf_token: String,
+}
+
+/// Create a new branch (POST)
+/// Only repo owners and org members can create branches
+pub async fn create_branch(
+    State(state): State<Arc<AppState>>,
+    Path((owner, repo)): Path<(String, String)>,
+    headers: HeaderMap,
+    Form(form): Form<NewBranchForm>,
+) -> Response {
+    let repo_name = repo.trim_end_matches(".git");
+    let full_name = format!("{}/{}", owner, repo_name);
+
+    // Verify CSRF token
+    let session_token = get_session_token(&headers);
+    if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
+        return render_error("Invalid request. Please try again.");
+    }
+
+    // Verify user is logged in
+    let current_user = match get_current_user(&state, &headers).await {
+        Some(u) => u,
+        None => return Redirect::to("/-/login?error=Please+sign+in+to+create+a+branch").into_response(),
+    };
+
+    // SECURITY: Only repo owners/org members can create branches
+    // This prevents non-owners from creating arbitrary branches
+    if !can_user_write_repo(&state, &current_user, &owner).await {
+        return render_error("You don't have permission to create branches in this repository. Only repository owners and organization members can create branches.");
+    }
+
+    let repo_handle = match state.repos.get_repo(&full_name) {
+        Ok(r) => r,
+        Err(_) => return render_error(&format!("Repository '{}' not found", full_name)),
+    };
+
+    // Validate branch name
+    let branch_name = form.branch_name.trim();
+    if branch_name.is_empty() {
+        return Redirect::to(&format!("/{}?error=Branch+name+cannot+be+empty", full_name)).into_response();
+    }
+    if !branch_name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '/' || c == '.') {
+        return Redirect::to(&format!("/{}?error=Invalid+branch+name", full_name)).into_response();
+    }
+
+    // Check if branch already exists
+    let new_ref = format!("refs/heads/{}", branch_name);
+    if repo_handle.resolve_ref(&new_ref).is_some() {
+        return Redirect::to(&format!("/{}?error=Branch+already+exists", full_name)).into_response();
+    }
+
+    // Resolve source branch
+    let source_ref = format!("refs/heads/{}", form.source_branch);
+    let commit_id = match repo_handle.resolve_ref(&source_ref) {
+        Some(id) => id,
+        None => return render_error(&format!("Source branch '{}' not found", form.source_branch)),
+    };
+
+    // Create the new branch
+    if let Err(e) = repo_handle.update_ref(&new_ref, commit_id) {
+        return render_error(&format!("Failed to create branch: {}", e));
+    }
+
+    // Redirect to the new branch
+    Redirect::to(&format!("/{}?tab=files&branch={}", full_name, branch_name)).into_response()
 }

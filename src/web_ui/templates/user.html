@@ -60,6 +60,7 @@
                     </div>
                     {% if is_org_owner and member.username != current_user %}
                     <form method="POST" action="/{{ owner }}/members/{{ member.username }}/remove" style="margin: 0;">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <button type="submit" class="btn btn-sm btn-ghost" onclick="return confirm('Remove {{ member.username }}?')">Remove</button>
                     </form>
                     {% endif %}
@@ -73,6 +74,7 @@
             {% if is_org_owner %}
             <div style="padding: 10px 14px; border-top: 1px solid var(--border);">
                 <form method="POST" action="/{{ owner }}/members" class="flex gap-2">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <input type="text" name="username" placeholder="Username" required class="input flex-1" style="height: 28px; font-size: 12px;">
                     <button type="submit" class="btn btn-sm btn-primary">Add</button>
                 </form>
