@@ -126,7 +126,14 @@ async fn main() {
         ));
 
     // Start server
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8080);
+    let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let addr: SocketAddr = format!("{}:{}", host, port)
+        .parse()
+        .expect("Invalid HOST:PORT combination");
     tracing::info!("Git-Xet Server starting on http://{}", addr);
     tracing::info!("");
     tracing::info!("API Endpoints:");

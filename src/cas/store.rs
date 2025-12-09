@@ -20,6 +20,8 @@ use tokio::sync::mpsc;
 use crate::db::entities::{lfs_object, lfs_chunk, cas_chunk, cas_block, file_segment};
 use crate::error::{Result, ServerError};
 use crate::storage::{namespaces, StorageBackend, StorageConfig};
+use std::sync::atomic::AtomicUsize;
+use std::thread;
 
 // ============================================================================
 // Constants (aligned with xet-core)
@@ -403,6 +405,14 @@ impl ReconstructionStream {
     }
 }
 
+/// Chunk location within a block (for fast dedup lookups)
+#[derive(Clone, Copy, Debug)]
+pub struct ChunkLocation {
+    pub block_hash: ContentHash,
+    pub byte_start: u32,
+    pub byte_end: u32,
+}
+
 /// Content-Addressable Storage backend with streaming and background processing.
 ///
 /// Data is stored on disk via the storage backend, not in memory.
@@ -412,6 +422,8 @@ pub struct CasStore {
     storage: Arc<dyn StorageBackend>,
     /// Set of known chunk hashes (for dedup checking without disk access)
     chunk_index: DashMap<ContentHash, u64>, // hash -> size
+    /// Chunk to block location index (for O(1) dedup lookups)
+    chunk_locations: DashMap<ContentHash, ChunkLocation>,
     /// Block metadata (small, kept in memory for fast lookups)
     blocks: DashMap<ContentHash, Block>,
     /// File reconstruction info indexed by file hash (Shard data)
@@ -453,6 +465,7 @@ impl CasStore {
         Self {
             storage,
             chunk_index: DashMap::new(),
+            chunk_locations: DashMap::new(),
             blocks: DashMap::new(),
             reconstructions: DashMap::new(),
             lfs_objects: DashMap::new(),
@@ -474,6 +487,7 @@ impl CasStore {
         Self {
             storage: config.build().await,
             chunk_index: DashMap::new(),
+            chunk_locations: DashMap::new(),
             blocks: DashMap::new(),
             reconstructions: DashMap::new(),
             lfs_objects: DashMap::new(),
@@ -563,9 +577,14 @@ impl CasStore {
                     })
                     .collect();
 
-                // Add chunks to deduplication index
+                // Add chunks to deduplication index AND location index
                 for entry in &chunks {
                     self.chunk_index.insert(entry.chunk_hash, entry.chunk_size as u64);
+                    self.chunk_locations.insert(entry.chunk_hash, ChunkLocation {
+                        block_hash,
+                        byte_start: entry.byte_offset,
+                        byte_end: entry.byte_offset + entry.chunk_size,
+                    });
                 }
 
                 let block = Block {
@@ -850,6 +869,16 @@ impl CasStore {
             std::fs::create_dir_all(parent).ok();
         }
         std::fs::write(&path, &data).ok();
+
+        // Update chunk_index and chunk_locations for O(1) dedup lookups
+        for entry in &block.chunks {
+            self.chunk_index.insert(entry.chunk_hash, entry.chunk_size as u64);
+            self.chunk_locations.insert(entry.chunk_hash, ChunkLocation {
+                block_hash: hash,
+                byte_start: entry.byte_offset,
+                byte_end: entry.byte_offset + entry.chunk_size,
+            });
+        }
 
         // Persist block and chunk entries to database
         if let Some(db) = &self.db {
@@ -1351,80 +1380,223 @@ impl CasStore {
         Ok(())
     }
 
-    /// Chunk and store data from a reader, bundling into Blocks (~64MB each)
-    /// Returns the chunk hashes and creates reconstruction info (shard)
-    fn chunk_and_store_streaming<R: Read>(&self, reader: R, file_hash: ContentHash) -> Result<Vec<ContentHash>> {
-        let chunks = self.chunker.chunk_streaming(reader);
-        let mut all_chunk_hashes = Vec::new();
+    /// Chunk and store data from a reader, with true deduplication across files.
+    /// Returns the chunk hashes and creates reconstruction info (shard).
+    ///
+    /// Uses parallel processing for hashing when possible.
+    fn chunk_and_store_streaming<R: Read>(&self, mut reader: R, file_hash: ContentHash) -> Result<Vec<ContentHash>> {
+        // Read all data first, then process in parallel
+        // This allows parallel hashing without requiring Send on the reader
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).map_err(|e| {
+            ServerError::Internal(format!("Error reading data: {}", e))
+        })?;
 
-        // Accumulator for building blocks
+        self.chunk_and_store_parallel_from_bytes(data, file_hash)
+    }
+
+    /// Parallel chunking from in-memory data
+    fn chunk_and_store_parallel_from_bytes(&self, data: Vec<u8>, file_hash: ContentHash) -> Result<Vec<ContentHash>> {
+        use std::sync::mpsc as std_mpsc;
+
+        // First, do content-defined chunking (sequential, fast)
+        let chunk_boundaries = self.chunker.find_all_boundaries(&data);
+
+        // Number of hasher threads
+        let num_hashers = thread::available_parallelism()
+            .map(|p| p.get().min(8))
+            .unwrap_or(4);
+
+        // Extract chunks and hash in parallel
+        let chunks: Vec<(usize, usize)> = chunk_boundaries.windows(2)
+            .enumerate()
+            .map(|(i, w)| (i, w[0], w[1] - w[0]))
+            .map(|(i, start, len)| (start, len))
+            .collect();
+
+        // Also include first chunk
+        let mut all_chunks: Vec<(usize, usize)> = vec![(0, chunk_boundaries.first().copied().unwrap_or(data.len()))];
+        for window in chunk_boundaries.windows(2) {
+            all_chunks.push((window[0], window[1] - window[0]));
+        }
+        // Handle remaining data after last boundary
+        if let Some(&last) = chunk_boundaries.last() {
+            if last < data.len() {
+                all_chunks.push((last, data.len() - last));
+            }
+        }
+        if chunk_boundaries.is_empty() && !data.is_empty() {
+            all_chunks = vec![(0, data.len())];
+        }
+
+        // Share data across threads using Arc
+        let data = Arc::new(data);
+
+        // Channel for hashed results
+        let (tx, rx) = std_mpsc::channel::<(usize, ContentHash, Bytes)>();
+
+        // Process chunks in parallel batches
+        let chunk_count = all_chunks.len();
+        let chunks_per_thread = (chunk_count + num_hashers - 1) / num_hashers;
+
+        let handles: Vec<_> = (0..num_hashers)
+            .map(|thread_id| {
+                let data = Arc::clone(&data);
+                let tx = tx.clone();
+                let start_idx = thread_id * chunks_per_thread;
+                let end_idx = ((thread_id + 1) * chunks_per_thread).min(chunk_count);
+                let thread_chunks: Vec<(usize, usize, usize)> = all_chunks[start_idx..end_idx]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(offset, len))| (start_idx + i, offset, len))
+                    .collect();
+
+                thread::spawn(move || {
+                    for (idx, offset, len) in thread_chunks {
+                        let chunk_data = &data[offset..offset + len];
+                        let hash = ContentHash::from_data(chunk_data);
+                        let bytes = Bytes::copy_from_slice(chunk_data);
+                        let _ = tx.send((idx, hash, bytes));
+                    }
+                })
+            })
+            .collect();
+
+        drop(tx); // Close sender
+
+        // Collect results
+        let mut hashed_chunks: Vec<Option<(ContentHash, Bytes)>> = vec![None; chunk_count];
+        for (idx, hash, bytes) in rx {
+            if idx < hashed_chunks.len() {
+                hashed_chunks[idx] = Some((hash, bytes));
+            }
+        }
+
+        // Wait for threads
+        for h in handles {
+            let _ = h.join();
+        }
+
+        // Process in order: dedup and store
+        self.process_hashed_chunks(hashed_chunks, file_hash, num_hashers)
+    }
+
+    /// Process pre-hashed chunks: dedup check and block assembly
+    fn process_hashed_chunks(
+        &self,
+        hashed_chunks: Vec<Option<(ContentHash, Bytes)>>,
+        file_hash: ContentHash,
+        num_threads: usize,
+    ) -> Result<Vec<ContentHash>> {
+        let mut all_chunk_hashes = Vec::with_capacity(hashed_chunks.len());
         let mut pending_chunks: Vec<(ContentHash, Bytes)> = Vec::new();
         let mut pending_size = 0usize;
-
-        // Segments for file reconstruction (shard data)
         let mut segments: Vec<FileSegment> = Vec::new();
+        let mut pending_chunk_hashes: Vec<ContentHash> = Vec::new();
+        let mut deduped_count = 0usize;
 
-        for chunk_result in chunks {
-            let chunk_data = chunk_result.map_err(|e| {
-                ServerError::Internal(format!("Error reading chunk: {}", e))
-            })?;
+        for maybe_chunk in hashed_chunks.into_iter() {
+            let (chunk_hash, data) = match maybe_chunk {
+                Some(c) => c,
+                None => continue,
+            };
 
-            let data = Bytes::from(chunk_data);
-            let chunk_hash = ContentHash::from_data(&data);
             let chunk_size = data.len();
-
-            // Add to pending block
-            pending_chunks.push((chunk_hash, data));
-            pending_size += chunk_size;
             all_chunk_hashes.push(chunk_hash);
 
-            // If we've accumulated enough for a block, flush it
-            if pending_size >= TARGET_BLOCK_SIZE {
-                let block_hash = self.store_block_sync(pending_chunks.clone());
+            // Check if this chunk already exists (DEDUPLICATION)
+            if let Some(location) = self.find_chunk_in_blocks(&chunk_hash) {
+                deduped_count += 1;
 
-                // Get the block metadata to build segment info
-                if let Some(block) = self.get_block_meta(&block_hash) {
-                    // Create segment covering all chunks in this block
-                    segments.push(FileSegment {
-                        block_hash,
-                        byte_start: 0,
-                        byte_end: block.total_size,
-                        segment_size: block.total_size,
-                    });
+                // Flush pending new chunks first
+                if !pending_chunks.is_empty() {
+                    let block_hash = self.store_block_sync(std::mem::take(&mut pending_chunks));
+                    self.add_segments_for_new_block(&block_hash, &pending_chunk_hashes, &mut segments);
+                    pending_chunk_hashes.clear();
+                    pending_size = 0;
                 }
 
-                // Reset accumulator
-                pending_chunks.clear();
-                pending_size = 0;
+                // Add segment for deduped chunk
+                segments.push(FileSegment {
+                    block_hash: location.0,
+                    byte_start: location.1,
+                    byte_end: location.2,
+                    segment_size: chunk_size as u32,
+                });
+            } else {
+                // New chunk
+                pending_chunks.push((chunk_hash, data));
+                pending_chunk_hashes.push(chunk_hash);
+                pending_size += chunk_size;
+
+                if pending_size >= TARGET_BLOCK_SIZE {
+                    let block_hash = self.store_block_sync(std::mem::take(&mut pending_chunks));
+                    self.add_segments_for_new_block(&block_hash, &pending_chunk_hashes, &mut segments);
+                    pending_chunk_hashes.clear();
+                    pending_size = 0;
+                }
             }
         }
 
-        // Flush remaining chunks as final block
+        // Flush remaining
         if !pending_chunks.is_empty() {
             let block_hash = self.store_block_sync(pending_chunks);
-
-            if let Some(block) = self.get_block_meta(&block_hash) {
-                segments.push(FileSegment {
-                    block_hash,
-                    byte_start: 0,
-                    byte_end: block.total_size,
-                    segment_size: block.total_size,
-                });
-            }
+            self.add_segments_for_new_block(&block_hash, &pending_chunk_hashes, &mut segments);
         }
 
-        // Store file reconstruction info (shard)
+        // Store reconstruction info
         let reconstruction = FileReconstruction::new(file_hash, segments);
+        let segment_count = reconstruction.segments.len();
         self.store_reconstruction(reconstruction);
 
-        tracing::debug!(
-            "File {} chunked into {} chunks across {} blocks",
+        let new_count = all_chunk_hashes.len() - deduped_count;
+        tracing::info!(
+            "File {} chunked: {} total chunks ({} new, {} deduped = {:.1}% dedup ratio) [parallel, {} threads]",
             file_hash.to_hex(),
             all_chunk_hashes.len(),
-            self.get_reconstruction(&file_hash).map(|r| r.segments.len()).unwrap_or(0)
+            new_count,
+            deduped_count,
+            if all_chunk_hashes.is_empty() { 0.0 } else { (deduped_count as f64 / all_chunk_hashes.len() as f64) * 100.0 },
+            num_threads
+        );
+
+        tracing::debug!(
+            "File {} reconstruction: {} segments",
+            file_hash.to_hex(),
+            segment_count
         );
 
         Ok(all_chunk_hashes)
+    }
+
+    /// Find a chunk's location in existing blocks (O(1) lookup)
+    /// Returns (block_hash, byte_start, byte_end) if found
+    fn find_chunk_in_blocks(&self, chunk_hash: &ContentHash) -> Option<(ContentHash, u32, u32)> {
+        self.chunk_locations.get(chunk_hash).map(|loc| {
+            (loc.block_hash, loc.byte_start, loc.byte_end)
+        })
+    }
+
+    /// Add segments for chunks in a newly created block
+    fn add_segments_for_new_block(
+        &self,
+        block_hash: &ContentHash,
+        chunk_hashes: &[ContentHash],
+        segments: &mut Vec<FileSegment>,
+    ) {
+        if let Some(block) = self.get_block_meta(block_hash) {
+            // Create a segment for each chunk in the block
+            for (i, _chunk_hash) in chunk_hashes.iter().enumerate() {
+                if let Some(entry) = block.chunks.get(i) {
+                    segments.push(FileSegment {
+                        block_hash: *block_hash,
+                        byte_start: entry.byte_offset,
+                        byte_end: entry.byte_offset + entry.chunk_size,
+                        segment_size: entry.chunk_size,
+                    });
+                }
+            }
+        }
     }
 
     /// Check if an LFS object exists (in any state)
@@ -1556,6 +1728,7 @@ pub struct CasStats {
 }
 
 /// Content-based chunking using a rolling hash (simplified gear hash)
+#[derive(Clone)]
 pub struct Chunker {
     min_chunk_size: usize,
     max_chunk_size: usize,
@@ -1624,6 +1797,27 @@ impl Chunker {
         }
 
         data.len()
+    }
+
+    /// Find all chunk boundaries in data (for parallel hashing)
+    /// Returns byte offsets where chunks end
+    pub fn find_all_boundaries(&self, data: &[u8]) -> Vec<usize> {
+        if data.is_empty() {
+            return Vec::new();
+        }
+
+        let mut boundaries = Vec::new();
+        let mut pos = 0;
+
+        while pos < data.len() {
+            let boundary = self.find_chunk_boundary(&data[pos..]);
+            pos += boundary;
+            if pos < data.len() {
+                boundaries.push(pos);
+            }
+        }
+
+        boundaries
     }
 
     /// Chunk data from a reader using streaming (constant memory usage)

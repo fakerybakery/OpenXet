@@ -47,6 +47,7 @@ parking_lot = "0.12"
 dashmap = "6"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
+crossbeam-channel = "0.5"
 
 # Database (SQLite with SeaORM)
 sea-orm = { version = "1", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
