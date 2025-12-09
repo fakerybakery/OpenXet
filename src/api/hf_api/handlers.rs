@@ -497,9 +497,25 @@ fn collect_tree_entries(
 
 /// POST /api/{type}s/:owner/:repo/preupload/:revision - Pre-upload check
 pub async fn preupload(
-    Path((_owner, _repo, _revision)): Path<(String, String, String)>,
+    State(state): State<Arc<AppState>>,
+    Path((owner, _repo, _revision)): Path<(String, String, String)>,
+    headers: HeaderMap,
     axum::Json(req): axum::Json<PreuploadRequest>,
 ) -> Response {
+    // SECURITY: Require authentication for preupload (part of upload flow)
+    let token = match extract_auth(&state, &headers).await {
+        Some(t) => t,
+        None => return error_response(StatusCode::UNAUTHORIZED, "Authentication required"),
+    };
+
+    // Check write permission (preupload is part of the upload flow)
+    if !check_write_permission(&state, Some(&token), &owner).await {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "You don't have permission to upload to this repository",
+        );
+    }
+
     // Determine upload mode for each file
     let files: Vec<PreuploadFileResponse> = req
         .files
