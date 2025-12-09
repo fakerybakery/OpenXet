@@ -10,7 +10,7 @@ use tera::Context;
 
 use crate::api::AppState;
 use crate::git::ObjectType;
-use super::utils::{render_template, render_error, add_user_to_context, add_csrf_to_context, get_session_token, verify_csrf_token, Breadcrumb};
+use super::utils::{render_template, render_error, add_user_to_context, add_csrf_to_context, get_session_token, verify_csrf_token, get_current_user, can_user_write_repo, Breadcrumb};
 use super::lfs::parse_lfs_pointer;
 use super::tree_ops::{build_updated_tree, build_tree_with_addition, build_tree_with_deletion};
 
@@ -31,6 +31,16 @@ pub async fn edit_file(
 ) -> Response {
     let repo_name = repo.trim_end_matches(".git");
     let full_name = format!("{}/{}", owner, repo_name);
+
+    // SECURITY: Require authentication and write permission
+    let current_user = match get_current_user(&state, &headers).await {
+        Some(u) => u,
+        None => return Redirect::to("/-/login?error=Please+sign+in+to+edit+files").into_response(),
+    };
+
+    if !can_user_write_repo(&state, &current_user, &owner).await {
+        return render_error("You don't have permission to edit files in this repository. Only repository owners and organization members can edit files.");
+    }
 
     let repo_handle = match state.repos.get_repo(&full_name) {
         Ok(r) => r,
@@ -123,6 +133,16 @@ async fn render_new_file_form(state: &AppState, headers: &HeaderMap, owner: &str
     let repo_name = repo.trim_end_matches(".git");
     let full_name = format!("{}/{}", owner, repo_name);
 
+    // SECURITY: Require authentication and write permission
+    let current_user = match get_current_user(state, headers).await {
+        Some(u) => u,
+        None => return Redirect::to("/-/login?error=Please+sign+in+to+create+files").into_response(),
+    };
+
+    if !can_user_write_repo(state, &current_user, owner).await {
+        return render_error("You don't have permission to create files in this repository. Only repository owners and organization members can create files.");
+    }
+
     let mut context = Context::new();
     context.insert("owner", owner);
     context.insert("repo_name", repo_name);
@@ -161,6 +181,17 @@ pub async fn commit_file(
     if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
         return render_error("Invalid request. Please try again.");
     }
+
+    // SECURITY: Require authentication and write permission
+    let current_user = match get_current_user(&state, &headers).await {
+        Some(u) => u,
+        None => return Redirect::to("/-/login?error=Please+sign+in+to+edit+files").into_response(),
+    };
+
+    if !can_user_write_repo(&state, &current_user, &owner).await {
+        return render_error("You don't have permission to edit files in this repository. Only repository owners and organization members can edit files.");
+    }
+
     commit_file_impl(state, &owner, &repo, &ref_name, &path, form).await
 }
 
@@ -176,6 +207,17 @@ pub async fn commit_new_file(
     if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
         return render_error("Invalid request. Please try again.");
     }
+
+    // SECURITY: Require authentication and write permission
+    let current_user = match get_current_user(&state, &headers).await {
+        Some(u) => u,
+        None => return Redirect::to("/-/login?error=Please+sign+in+to+create+files").into_response(),
+    };
+
+    if !can_user_write_repo(&state, &current_user, &owner).await {
+        return render_error("You don't have permission to create files in this repository. Only repository owners and organization members can create files.");
+    }
+
     commit_file_impl(state, &owner, &repo, &ref_name, "", form).await
 }
 
@@ -191,6 +233,17 @@ pub async fn commit_new_file_in_dir(
     if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {
         return render_error("Invalid request. Please try again.");
     }
+
+    // SECURITY: Require authentication and write permission
+    let current_user = match get_current_user(&state, &headers).await {
+        Some(u) => u,
+        None => return Redirect::to("/-/login?error=Please+sign+in+to+create+files").into_response(),
+    };
+
+    if !can_user_write_repo(&state, &current_user, &owner).await {
+        return render_error("You don't have permission to create files in this repository. Only repository owners and organization members can create files.");
+    }
+
     commit_file_impl(state, &owner, &repo, &ref_name, "", form).await
 }
 
