@@ -71,11 +71,23 @@ pub async fn login_submit(
     }
 }
 
+/// Check if registration is disabled via environment variable
+fn is_registration_disabled() -> bool {
+    std::env::var("DISABLE_REGISTRATION")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false)
+}
+
 /// Signup page (GET)
 pub async fn signup_page(
     headers: HeaderMap,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    // Check if registration is disabled
+    if is_registration_disabled() {
+        return Redirect::to("/-/login?error=Registration+is+currently+closed").into_response();
+    }
+
     let mut context = Context::new();
     if let Some(error) = query.get("error") {
         context.insert("error", error);
@@ -90,6 +102,11 @@ pub async fn signup_submit(
     headers: HeaderMap,
     Form(form): Form<SignupForm>,
 ) -> Response {
+    // Check if registration is disabled
+    if is_registration_disabled() {
+        return Redirect::to("/-/login?error=Registration+is+currently+closed").into_response();
+    }
+
     // Verify CSRF token
     let session_token = get_session_token(&headers);
     if !verify_csrf_token(&form.csrf_token, session_token.as_deref()) {

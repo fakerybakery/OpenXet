@@ -400,10 +400,26 @@ pub struct RegisterRequest {
     pub email: Option<String>,
 }
 
+/// Check if registration is disabled via environment variable
+fn is_registration_disabled() -> bool {
+    std::env::var("DISABLE_REGISTRATION")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false)
+}
+
 pub async fn register(
     State(state): State<Arc<AppState>>,
     axum::Json(req): axum::Json<RegisterRequest>,
 ) -> Response {
+    // Check if registration is disabled
+    if is_registration_disabled() {
+        return Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"error": "Registration is currently closed"}"#))
+            .unwrap();
+    }
+
     match state.auth.register_user(&req.username, &req.password, req.email.as_deref()).await {
         Ok(user) => {
             let json = serde_json::json!({
