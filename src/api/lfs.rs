@@ -234,7 +234,18 @@ pub async fn lfs_batch(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("localhost:8080");
 
-    let scheme = "http"; // In production, detect from X-Forwarded-Proto
+    // Detect scheme from X-Forwarded-Proto (set by reverse proxy like nginx)
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or_else(|| {
+            // Fallback: check if host looks like it's behind HTTPS
+            if host.ends_with(":443") || (!host.contains(':') && !host.starts_with("localhost")) {
+                "https"
+            } else {
+                "http"
+            }
+        });
 
     // Get the authorization header to pass along to subsequent requests
     let auth_header = headers
@@ -553,13 +564,14 @@ async fn stream_to_file_fast(
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| format!("Error reading body: {}", e))?;
-        let data = chunk.into_data().map_err(|_| "Failed to get frame data")?;
+        // into_data() returns Err for trailers/non-data frames - skip those
+        if let Ok(data) = chunk.into_data() {
+            file.write_all(&data)
+                .await
+                .map_err(|e| format!("Failed to write to file: {}", e))?;
 
-        file.write_all(&data)
-            .await
-            .map_err(|e| format!("Failed to write to file: {}", e))?;
-
-        total_written += data.len() as u64;
+            total_written += data.len() as u64;
+        }
     }
 
     file.flush()
