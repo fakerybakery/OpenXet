@@ -641,6 +641,11 @@ impl CasStore {
         &self.storage
     }
 
+    /// Get the storage path (for multipart upload temp storage)
+    pub fn storage_path(&self) -> &std::path::Path {
+        &self.storage_path
+    }
+
     /// Get the path for storing a raw LFS object (for streaming uploads)
     pub fn raw_object_path(&self, oid: &ContentHash) -> PathBuf {
         self.storage_path
