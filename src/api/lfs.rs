@@ -56,12 +56,13 @@ static LFS_URL_SECRET: Lazy<Vec<u8>> = Lazy::new(|| {
 /// URL signature validity in seconds
 const LFS_URL_EXPIRY_SECS: u64 = 3600;
 
-/// Multipart upload chunk size (64MB - safely under Cloudflare's 100MB limit)
-const MULTIPART_CHUNK_SIZE: u64 = 64 * 1024 * 1024;
+/// Multipart upload chunk size (10MB - small enough for Cloudflare to buffer quickly)
+/// Smaller chunks = less buffering delay per request = faster uploads through CDN proxies
+const MULTIPART_CHUNK_SIZE: u64 = 10 * 1024 * 1024;
 
-/// Minimum file size for multipart upload (50MB)
+/// Minimum file size for multipart upload (10MB)
 /// Files smaller than this use basic single-PUT upload
-const MULTIPART_THRESHOLD: u64 = 50 * 1024 * 1024;
+const MULTIPART_THRESHOLD: u64 = 10 * 1024 * 1024;
 
 /// LFS Batch Request
 #[derive(Debug, Deserialize)]
@@ -716,6 +717,9 @@ async fn stream_to_file_fast(
     use futures::StreamExt;
     use tokio::io::AsyncWriteExt;
 
+    let start = std::time::Instant::now();
+    tracing::debug!("stream_to_file_fast: starting for {:?}", path);
+
     // Create parent directory if needed
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -727,7 +731,10 @@ async fn stream_to_file_fast(
         .await
         .map_err(|e| format!("Failed to create file: {}", e))?;
 
+    tracing::debug!("stream_to_file_fast: file created in {:?}", start.elapsed());
+
     let mut total_written = 0u64;
+    let mut chunk_count = 0u64;
     let mut stream = http_body_util::BodyStream::new(body);
 
     while let Some(chunk_result) = stream.next().await {
@@ -739,12 +746,34 @@ async fn stream_to_file_fast(
                 .map_err(|e| format!("Failed to write to file: {}", e))?;
 
             total_written += data.len() as u64;
+            chunk_count += 1;
+
+            // Log progress every 10MB
+            if total_written % (10 * 1024 * 1024) < data.len() as u64 {
+                tracing::debug!(
+                    "stream_to_file_fast: received {} MB in {:?}",
+                    total_written / (1024 * 1024),
+                    start.elapsed()
+                );
+            }
         }
     }
 
     file.flush()
         .await
         .map_err(|e| format!("Failed to flush file: {}", e))?;
+
+    let elapsed = start.elapsed();
+    let speed_mbps = if elapsed.as_secs_f64() > 0.0 {
+        (total_written as f64 / 1024.0 / 1024.0) / elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
+
+    tracing::info!(
+        "stream_to_file_fast: wrote {} bytes in {} chunks, {:.1} MB/s, {:?}",
+        total_written, chunk_count, speed_mbps, elapsed
+    );
 
     Ok(total_written)
 }
