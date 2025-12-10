@@ -426,6 +426,41 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
         r#"CREATE INDEX IF NOT EXISTS idx_pr_events_pr ON pr_events(pr_id)"#.to_string(),
     )).await?;
 
+    // Access tokens table (for API authentication)
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"
+        CREATE TABLE IF NOT EXISTS access_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            token_hash TEXT NOT NULL,
+            token_prefix TEXT NOT NULL,
+            description TEXT,
+            scopes TEXT NOT NULL DEFAULT '*',
+            last_used_at INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        "#.to_string(),
+    )).await?;
+
+    // Create indexes for token lookups
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_tokens_user ON access_tokens(user_id)"#.to_string(),
+    )).await?;
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_tokens_hash ON access_tokens(token_hash)"#.to_string(),
+    )).await?;
+    db.execute(Statement::from_string(
+        db.get_database_backend(),
+        r#"CREATE INDEX IF NOT EXISTS idx_tokens_prefix ON access_tokens(token_prefix)"#.to_string(),
+    )).await?;
+
     tracing::info!("Database tables initialized");
     Ok(())
 }

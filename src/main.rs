@@ -89,6 +89,11 @@ async fn main() {
         .route("/api/orgs/:org/members", get(api::get_org_members))
         .route("/api/orgs/:org/members", post(api::add_org_member))
         .route("/api/orgs/:org/members/:username", delete(api::remove_org_member))
+        // Access token endpoints
+        .route("/api/tokens", post(api::create_access_token))
+        .route("/api/tokens", get(api::list_access_tokens))
+        .route("/api/tokens/:id", delete(api::revoke_access_token))
+        .route("/api/tokens/:id/permanent", delete(api::delete_access_token))
         // Stats
         .route("/api/cas/stats", get(api::cas_stats))
         // Health check

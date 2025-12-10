@@ -17,6 +17,7 @@ pub mod repo_like;
 pub mod pull_request;
 pub mod pr_comment;
 pub mod pr_event;
+pub mod access_token;
 
 // Re-export entities for convenient access (may not all be used yet)
 #[allow(unused_imports)]
@@ -53,3 +54,5 @@ pub use pull_request::Entity as PullRequest;
 pub use pr_comment::Entity as PrComment;
 #[allow(unused_imports)]
 pub use pr_event::Entity as PrEvent;
+#[allow(unused_imports)]
+pub use access_token::Entity as AccessToken;

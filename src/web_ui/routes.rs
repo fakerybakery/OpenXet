@@ -24,6 +24,7 @@ mod discussion_handlers;
 mod org_handlers;
 mod like_handlers;
 mod pr_handlers;
+mod token_handlers;
 mod trending_handlers;
 
 // Re-export for use by other handlers
@@ -55,6 +56,11 @@ pub fn create_router() -> Router<Arc<AppState>> {
         .route("/-/stats", get(home_handlers::stats))
         .route("/-/search", get(home_handlers::search))
         .route("/-/trending", get(trending_handlers::trending_page))
+
+        // Settings - Token management
+        .route("/-/settings/tokens", get(token_handlers::tokens_page).post(token_handlers::create_token))
+        .route("/-/settings/tokens/:id/revoke", axum::routing::post(token_handlers::revoke_token))
+        .route("/-/settings/tokens/:id/delete", axum::routing::post(token_handlers::delete_token))
 
         // User/org profile page (must come before /:owner/:repo)
         .route("/:owner", get(home_handlers::user_profile))

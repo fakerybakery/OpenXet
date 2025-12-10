@@ -19,7 +19,7 @@ use sea_orm::{
 };
 use subtle::ConstantTimeEq;
 
-use crate::db::entities::{org_member, user};
+use crate::db::entities::{access_token, org_member, user};
 use crate::error::{Result, ServerError};
 
 /// Hash a password using Argon2id with random salt
@@ -112,6 +112,67 @@ pub fn generate_random_password() -> String {
             CHARSET[idx] as char
         })
         .collect()
+}
+
+/// Generate a secure access token with ox_ prefix
+/// Format: ox_[32 random bytes as hex] = 67 characters total
+pub fn generate_access_token() -> String {
+    let mut rng = rand::thread_rng();
+    let mut token_bytes = [0u8; 32]; // 256 bits of entropy
+    rng.fill(&mut token_bytes);
+    let hex: String = token_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    format!("ox_{}", hex)
+}
+
+/// Hash an access token for secure storage using SHA-256
+/// We use SHA-256 instead of Argon2 because:
+/// 1. Access tokens have high entropy (256 bits) so no need for expensive hashing
+/// 2. We need fast lookups during API requests
+/// 3. The token itself is the secret, not a user-chosen password
+pub fn hash_access_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let result = hasher.finalize();
+    result.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Information about a created access token (returned only once at creation)
+#[derive(Clone, Debug)]
+pub struct CreatedAccessToken {
+    /// The raw token (only shown once!)
+    pub token: String,
+    /// Token ID in database
+    pub id: i32,
+    /// Token name
+    pub name: String,
+    /// Token prefix for identification (ox_XXXXXXXX)
+    pub prefix: String,
+    /// Creation timestamp
+    pub created_at: i64,
+}
+
+/// Information about an access token (for listing - no raw token)
+#[derive(Clone, Debug)]
+pub struct AccessTokenInfo {
+    /// Token ID in database
+    pub id: i32,
+    /// Token name
+    pub name: String,
+    /// Token prefix for identification (ox_XXXXXXXX)
+    pub prefix: String,
+    /// Description
+    pub description: Option<String>,
+    /// Scopes
+    pub scopes: String,
+    /// Last used timestamp
+    pub last_used_at: i64,
+    /// Creation timestamp
+    pub created_at: i64,
+    /// Expiration timestamp (0 = never)
+    pub expires_at: i64,
+    /// Whether token is active
+    pub is_active: bool,
 }
 
 /// Authentication manager with database backend
@@ -432,9 +493,10 @@ impl AuthManager {
 
     /// Parse Bearer token header and validate
     ///
-    /// Supports two formats:
-    /// 1. Standard Bearer token (looked up in token store)
+    /// Supports three formats:
+    /// 1. Access tokens (ox_* format) - validated against database
     /// 2. HuggingFace-style "username:password" format for direct auth
+    /// 3. Standard Bearer token (looked up in session token store)
     pub async fn validate_bearer(&self, auth_header: &str) -> Result<Token> {
         if !auth_header.starts_with("Bearer ") {
             return Err(ServerError::AuthFailed);
@@ -442,14 +504,19 @@ impl AuthManager {
 
         let token_str = &auth_header[7..];
 
-        // First, check if it's a "username:password" format (HuggingFace style)
+        // First, check if it's an access token (ox_* format)
+        if token_str.starts_with("ox_") {
+            return self.validate_access_token(token_str).await;
+        }
+
+        // Second, check if it's a "username:password" format (HuggingFace style)
         if let Some(colon_idx) = token_str.find(':') {
             let username = &token_str[..colon_idx];
             let password = &token_str[colon_idx + 1..];
             return self.authenticate(username, password).await;
         }
 
-        // Otherwise, look up in token store
+        // Otherwise, look up in session token store
         self.validate_token(token_str)
     }
 
@@ -518,10 +585,208 @@ impl AuthManager {
         tokens.retain(|_, t| !t.is_expired());
     }
 
-    /// Revoke a token
+    /// Revoke a session token
     pub fn revoke_token(&self, token_str: &str) {
         let mut tokens = self.tokens.write();
         tokens.remove(token_str);
+    }
+
+    // =========================================================================
+    // Access Token Management (ox_* tokens for API authentication)
+    // =========================================================================
+
+    /// Create a new access token for a user
+    /// Returns the created token info INCLUDING the raw token (only time it's visible!)
+    pub async fn create_access_token(
+        &self,
+        user_id: i32,
+        name: &str,
+        description: Option<&str>,
+        scopes: Option<&str>,
+        expires_in_days: Option<i64>,
+    ) -> Result<CreatedAccessToken> {
+        let db = self.db.as_ref().ok_or(ServerError::Internal("No database connection".to_string()))?;
+
+        // Generate the raw token
+        let raw_token = generate_access_token();
+        let token_hash = hash_access_token(&raw_token);
+        let token_prefix = raw_token[..11].to_string(); // "ox_" + first 8 hex chars
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let expires_at = expires_in_days
+            .map(|days| now + (days * 24 * 60 * 60))
+            .unwrap_or(0); // 0 = never expires
+
+        let new_token = access_token::ActiveModel {
+            user_id: Set(user_id),
+            name: Set(name.to_string()),
+            token_hash: Set(token_hash),
+            token_prefix: Set(token_prefix.clone()),
+            description: Set(description.map(|s| s.to_string())),
+            scopes: Set(scopes.unwrap_or("*").to_string()),
+            last_used_at: Set(0),
+            created_at: Set(now),
+            expires_at: Set(expires_at),
+            is_active: Set(true),
+            ..Default::default()
+        };
+
+        let token_model = new_token
+            .insert(db.as_ref())
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?;
+
+        tracing::info!("Access token '{}' created for user {}", name, user_id);
+
+        Ok(CreatedAccessToken {
+            token: raw_token,
+            id: token_model.id,
+            name: token_model.name,
+            prefix: token_prefix,
+            created_at: now,
+        })
+    }
+
+    /// Validate an access token (ox_* format) and return user info
+    /// Updates last_used_at on successful validation
+    pub async fn validate_access_token(&self, token_str: &str) -> Result<Token> {
+        // Must start with ox_
+        if !token_str.starts_with("ox_") {
+            return Err(ServerError::AuthFailed);
+        }
+
+        let db = self.db.as_ref().ok_or(ServerError::Internal("No database connection".to_string()))?;
+
+        let token_hash = hash_access_token(token_str);
+
+        // Find token by hash
+        let token_model = access_token::Entity::find()
+            .filter(access_token::Column::TokenHash.eq(&token_hash))
+            .filter(access_token::Column::IsActive.eq(true))
+            .one(db.as_ref())
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?
+            .ok_or(ServerError::AuthFailed)?;
+
+        // Check expiration
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        if token_model.expires_at > 0 && now > token_model.expires_at {
+            return Err(ServerError::AuthFailed);
+        }
+
+        // Update last_used_at
+        let mut active_model: access_token::ActiveModel = token_model.clone().into();
+        active_model.last_used_at = Set(now);
+        active_model
+            .update(db.as_ref())
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?;
+
+        // Get user info
+        let user = user::Entity::find_by_id(token_model.user_id)
+            .one(db.as_ref())
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?
+            .ok_or(ServerError::AuthFailed)?;
+
+        // Return a Token struct for compatibility with existing auth flow
+        Ok(Token {
+            token: token_str.to_string(),
+            user_id: user.id,
+            username: user.username,
+            is_org: user.is_org,
+            expires_at: if token_model.expires_at > 0 {
+                UNIX_EPOCH + Duration::from_secs(token_model.expires_at as u64)
+            } else {
+                SystemTime::now() + Duration::from_secs(365 * 24 * 60 * 60) // Far future
+            },
+        })
+    }
+
+    /// List all access tokens for a user (without the actual token values)
+    pub async fn list_access_tokens(&self, user_id: i32) -> Result<Vec<AccessTokenInfo>> {
+        let db = self.db.as_ref().ok_or(ServerError::Internal("No database connection".to_string()))?;
+
+        let tokens = access_token::Entity::find()
+            .filter(access_token::Column::UserId.eq(user_id))
+            .all(db.as_ref())
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?;
+
+        Ok(tokens
+            .into_iter()
+            .map(|t| AccessTokenInfo {
+                id: t.id,
+                name: t.name,
+                prefix: t.token_prefix,
+                description: t.description,
+                scopes: t.scopes,
+                last_used_at: t.last_used_at,
+                created_at: t.created_at,
+                expires_at: t.expires_at,
+                is_active: t.is_active,
+            })
+            .collect())
+    }
+
+    /// Revoke an access token by ID (user must own the token)
+    pub async fn revoke_access_token(&self, token_id: i32, user_id: i32) -> Result<()> {
+        let db = self.db.as_ref().ok_or(ServerError::Internal("No database connection".to_string()))?;
+
+        // Find the token and verify ownership
+        let token = access_token::Entity::find_by_id(token_id)
+            .one(db.as_ref())
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?
+            .ok_or(ServerError::NotFound)?;
+
+        if token.user_id != user_id {
+            return Err(ServerError::PermissionDenied);
+        }
+
+        // Soft delete by setting is_active = false
+        let mut active_model: access_token::ActiveModel = token.into();
+        active_model.is_active = Set(false);
+        active_model
+            .update(db.as_ref())
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?;
+
+        tracing::info!("Access token {} revoked by user {}", token_id, user_id);
+        Ok(())
+    }
+
+    /// Delete an access token permanently by ID (user must own the token)
+    pub async fn delete_access_token(&self, token_id: i32, user_id: i32) -> Result<()> {
+        let db = self.db.as_ref().ok_or(ServerError::Internal("No database connection".to_string()))?;
+
+        // Find the token and verify ownership
+        let token = access_token::Entity::find_by_id(token_id)
+            .one(db.as_ref())
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?
+            .ok_or(ServerError::NotFound)?;
+
+        if token.user_id != user_id {
+            return Err(ServerError::PermissionDenied);
+        }
+
+        // Hard delete
+        access_token::Entity::delete_by_id(token_id)
+            .exec(db.as_ref())
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?;
+
+        tracing::info!("Access token {} deleted by user {}", token_id, user_id);
+        Ok(())
     }
 
     /// Ensure admin user exists with secure password handling

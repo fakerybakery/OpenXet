@@ -11,6 +11,7 @@ pub use handlers::{
     AppState, cas_stats, create_repo, delete_repo, health, list_refs, list_repos, login,
     git_info_refs, git_upload_pack, git_receive_pack,
     register, create_org, add_org_member, remove_org_member, get_org_members,
+    create_access_token, list_access_tokens, revoke_access_token, delete_access_token,
 };
 pub use lfs::{lfs_batch, lfs_download, lfs_upload, lfs_verify, lfs_verify_signed, lfs_multipart_complete};
 pub use hf_api::router as hf_router;

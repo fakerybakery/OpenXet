@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+
+{% block title %}Access Tokens - OpenXet{% endblock %}
+
+{% block content %}
+<div style="max-width: 720px; margin: 0 auto;">
+    <div class="flex items-center justify-between mb-4">
+        <div>
+            <h1 style="font-size: 20px; font-weight: 600; margin: 0;">Access Tokens</h1>
+            <p class="text-sm text-secondary mt-1">Manage your API access tokens for Git and LFS operations</p>
+        </div>
+    </div>
+
+    {% if new_token %}
+    <div class="card mb-4" style="background: rgba(34, 197, 94, 0.08); border-color: rgba(34, 197, 94, 0.3);">
+        <div class="card-body">
+            <div class="flex items-start gap-3">
+                <svg class="icon-lg text-success" style="flex-shrink: 0; margin-top: 2px;" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M8 16A8 8 0 108 0a8 8 0 000 16zm3.78-9.72a.75.75 0 00-1.06-1.06L6.75 9.19 5.28 7.72a.75.75 0 00-1.06 1.06l2 2a.75.75 0 001.06 0l4.5-4.5z"/>
+                </svg>
+                <div style="flex: 1; min-width: 0;">
+                    <div class="font-semibold text-success mb-2">Token created successfully!</div>
+                    <p class="text-sm text-secondary mb-3">
+                        Copy your new access token now. You won't be able to see it again!
+                    </p>
+                    <div style="position: relative;">
+                        <input type="text" readonly value="{{ new_token }}" id="new-token-input"
+                            class="input font-mono" style="padding-right: 80px; font-size: 13px; background: var(--bg-surface);">
+                        <button type="button" onclick="copyToken()" id="copy-btn"
+                            class="btn btn-sm btn-primary" style="position: absolute; right: 4px; top: 50%; transform: translateY(-50%);">
+                            Copy
+                        </button>
+                    </div>
+                    <p class="text-xs text-muted mt-2">
+                        Use this token in your Git client or HuggingFace CLI instead of your password.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+    function copyToken() {
+        var input = document.getElementById('new-token-input');
+        var btn = document.getElementById('copy-btn');
+        input.select();
+        input.setSelectionRange(0, 99999);
+        navigator.clipboard.writeText(input.value).then(function() {
+            btn.textContent = 'Copied!';
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-success');
+            setTimeout(function() {
+                btn.textContent = 'Copy';
+                btn.classList.remove('btn-success');
+                btn.classList.add('btn-primary');
+            }, 2000);
+        });
+    }
+    </script>
+    {% endif %}
+
+    {% if success %}
+    <div class="card mb-3" style="background: rgba(34, 197, 94, 0.1); border-color: rgba(34, 197, 94, 0.3);">
+        <div class="card-body text-success text-sm">{{ success }}</div>
+    </div>
+    {% endif %}
+
+    {% if error %}
+    <div class="card mb-3" style="background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.3);">
+        <div class="card-body text-error text-sm">{{ error }}</div>
+    </div>
+    {% endif %}
+
+    <!-- Create new token -->
+    <div class="card mb-4">
+        <div class="card-header">Create new token</div>
+        <form method="POST" action="/-/settings/tokens">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="card-body">
+                <div class="form-group">
+                    <label class="form-label">Token name</label>
+                    <input type="text" name="name" required placeholder="e.g., My laptop, CI/CD pipeline" class="input" maxlength="100">
+                    <div class="form-hint">A descriptive name to identify this token</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Description (optional)</label>
+                    <input type="text" name="description" placeholder="What is this token for?" class="input" maxlength="255">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Expiration</label>
+                    <select name="expires" class="select" style="width: 100%; height: 38px;">
+                        <option value="never">Never expire</option>
+                        <option value="30">30 days</option>
+                        <option value="60">60 days</option>
+                        <option value="90" selected>90 days</option>
+                        <option value="365">1 year</option>
+                    </select>
+                </div>
+            </div>
+            <div class="file-header" style="border-top: 1px solid var(--border); border-bottom: none; justify-content: flex-end;">
+                <button type="submit" class="btn btn-primary">Create token</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Token list -->
+    <div class="card">
+        <div class="card-header">Your tokens ({{ token_count }})</div>
+        {% if tokens and tokens | length > 0 %}
+        <ul class="list" style="margin: 0; padding: 0;">
+            {% for token in tokens %}
+            <li class="list-item" style="flex-direction: column; align-items: stretch; gap: 8px; padding: 16px 18px;">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <svg class="icon {% if token.is_active %}text-success{% else %}text-muted{% endif %}" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M8.75 9V6.5a.25.25 0 00-.25-.25h-1a.25.25 0 00-.25.25V9a.25.25 0 00.25.25h1A.25.25 0 008.75 9zm2.5-4.5a1.75 1.75 0 00-3.5 0v1H6.25A1.75 1.75 0 004.5 7.25v5.5c0 .966.784 1.75 1.75 1.75h3.5a1.75 1.75 0 001.75-1.75v-5.5a1.75 1.75 0 00-1.75-1.75h-1.5v-1a.25.25 0 01.5 0v1h1A1.75 1.75 0 0011.5 7.25v5.5a.25.25 0 01-.25.25H4.75a.25.25 0 01-.25-.25v-5.5a.25.25 0 01.25-.25H6v-1a1.75 1.75 0 013.5 0v1h1.75a.25.25 0 01.25.25v5.5c0 .966-.784 1.75-1.75 1.75h-3.5A1.75 1.75 0 014.5 12.75v-5.5C4.5 6.284 5.284 5.5 6.25 5.5H7.5v-1z"/>
+                        </svg>
+                        <div>
+                            <div class="font-medium">{{ token.name }}</div>
+                            <div class="text-xs text-muted font-mono">{{ token.prefix }}...</div>
+                        </div>
+                        {% if not token.is_active %}
+                        <span class="badge badge-error">Revoked</span>
+                        {% endif %}
+                    </div>
+                    <div class="flex items-center gap-2">
+                        {% if token.is_active %}
+                        <form method="POST" action="/-/settings/tokens/{{ token.id }}/revoke" style="margin: 0;">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="btn btn-sm" onclick="return confirm('Revoke this token? It will stop working immediately.')">
+                                Revoke
+                            </button>
+                        </form>
+                        {% else %}
+                        <form method="POST" action="/-/settings/tokens/{{ token.id }}/delete" style="margin: 0;">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="btn btn-sm" style="color: var(--error);" onclick="return confirm('Delete this token permanently?')">
+                                Delete
+                            </button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </div>
+                {% if token.description %}
+                <div class="text-sm text-secondary">{{ token.description }}</div>
+                {% endif %}
+                <div class="flex gap-4 text-xs text-muted">
+                    <span>Created {{ token.created }}</span>
+                    <span>Last used: {{ token.last_used }}</span>
+                    <span>Expires: {{ token.expires }}</span>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="empty">
+            <svg class="icon-lg text-muted mb-2" style="width: 32px; height: 32px;" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8.75 9V6.5a.25.25 0 00-.25-.25h-1a.25.25 0 00-.25.25V9a.25.25 0 00.25.25h1A.25.25 0 008.75 9zm2.5-4.5a1.75 1.75 0 00-3.5 0v1H6.25A1.75 1.75 0 004.5 7.25v5.5c0 .966.784 1.75 1.75 1.75h3.5a1.75 1.75 0 001.75-1.75v-5.5a1.75 1.75 0 00-1.75-1.75h-1.5v-1a.25.25 0 01.5 0v1h1A1.75 1.75 0 0011.5 7.25v5.5a.25.25 0 01-.25.25H4.75a.25.25 0 01-.25-.25v-5.5a.25.25 0 01.25-.25H6v-1a1.75 1.75 0 013.5 0v1h1.75a.25.25 0 01.25.25v5.5c0 .966-.784 1.75-1.75 1.75h-3.5A1.75 1.75 0 014.5 12.75v-5.5C4.5 6.284 5.284 5.5 6.25 5.5H7.5v-1z"/>
+            </svg>
+            <div class="text-secondary">No access tokens yet</div>
+            <div class="text-sm text-muted mt-1">Create a token to authenticate with Git or the API</div>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Usage instructions -->
+    <div class="card mt-4">
+        <div class="card-header">How to use access tokens</div>
+        <div class="card-body">
+            <div class="mb-3">
+                <div class="font-medium mb-1">Git operations</div>
+                <p class="text-sm text-secondary mb-2">Use your token as the password when Git asks for credentials:</p>
+                <pre style="margin: 0; font-size: 12px;"><code>git clone https://{{ current_user }}:YOUR_TOKEN@hub.example.com/{{ current_user }}/repo.git</code></pre>
+            </div>
+            <div class="mb-3">
+                <div class="font-medium mb-1">HuggingFace CLI</div>
+                <p class="text-sm text-secondary mb-2">Log in with your token:</p>
+                <pre style="margin: 0; font-size: 12px;"><code>huggingface-cli login --token YOUR_TOKEN</code></pre>
+            </div>
+            <div>
+                <div class="font-medium mb-1">API requests</div>
+                <p class="text-sm text-secondary mb-2">Include the token in the Authorization header:</p>
+                <pre style="margin: 0; font-size: 12px;"><code>curl -H "Authorization: Bearer YOUR_TOKEN" https://hub.example.com/api/repos</code></pre>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

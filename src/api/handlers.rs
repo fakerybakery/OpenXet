@@ -699,3 +699,170 @@ pub async fn health() -> Response {
         .body(Body::from(json.to_string()))
         .unwrap()
 }
+
+// ============================================================================
+// Access Token Management Handlers
+// ============================================================================
+
+/// POST /api/tokens - Create a new access token
+#[derive(Deserialize)]
+pub struct CreateTokenRequest {
+    /// Name for the token (e.g., "CI/CD", "Local dev")
+    pub name: String,
+    /// Optional description
+    pub description: Option<String>,
+    /// Scopes (e.g., "read", "write", "*" for all) - defaults to "*"
+    pub scopes: Option<String>,
+    /// Expiration in days (0 or null for never)
+    pub expires_in_days: Option<i64>,
+}
+
+pub async fn create_access_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::Json(req): axum::Json<CreateTokenRequest>,
+) -> Response {
+    let token = match extract_auth(&headers, &state.auth).await {
+        Some(t) => t,
+        None => return require_auth_response(),
+    };
+
+    // Validate name
+    if req.name.trim().is_empty() {
+        return Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"error": "Token name is required"}"#))
+            .unwrap();
+    }
+
+    if req.name.len() > 100 {
+        return Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"error": "Token name must be 100 characters or less"}"#))
+            .unwrap();
+    }
+
+    match state.auth.create_access_token(
+        token.user_id,
+        &req.name,
+        req.description.as_deref(),
+        req.scopes.as_deref(),
+        req.expires_in_days,
+    ).await {
+        Ok(created_token) => {
+            // IMPORTANT: This is the ONLY time the raw token is returned!
+            let json = serde_json::json!({
+                "token": created_token.token,
+                "id": created_token.id,
+                "name": created_token.name,
+                "prefix": created_token.prefix,
+                "created_at": created_token.created_at,
+                "message": "Save this token now! It will not be shown again."
+            });
+            Response::builder()
+                .status(StatusCode::CREATED)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json.to_string()))
+                .unwrap()
+        }
+        Err(e) => e.into_response(),
+    }
+}
+
+/// GET /api/tokens - List user's access tokens
+pub async fn list_access_tokens(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match extract_auth(&headers, &state.auth).await {
+        Some(t) => t,
+        None => return require_auth_response(),
+    };
+
+    match state.auth.list_access_tokens(token.user_id).await {
+        Ok(tokens) => {
+            let token_list: Vec<_> = tokens
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "id": t.id,
+                        "name": t.name,
+                        "prefix": t.prefix,
+                        "description": t.description,
+                        "scopes": t.scopes,
+                        "last_used_at": t.last_used_at,
+                        "created_at": t.created_at,
+                        "expires_at": t.expires_at,
+                        "is_active": t.is_active
+                    })
+                })
+                .collect();
+
+            let json = serde_json::json!({
+                "tokens": token_list
+            });
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json.to_string()))
+                .unwrap()
+        }
+        Err(e) => e.into_response(),
+    }
+}
+
+/// DELETE /api/tokens/:id - Revoke (soft delete) an access token
+pub async fn revoke_access_token(
+    State(state): State<Arc<AppState>>,
+    Path(token_id): Path<i32>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match extract_auth(&headers, &state.auth).await {
+        Some(t) => t,
+        None => return require_auth_response(),
+    };
+
+    match state.auth.revoke_access_token(token_id, token.user_id).await {
+        Ok(()) => {
+            let json = serde_json::json!({
+                "message": "Token revoked successfully",
+                "id": token_id
+            });
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json.to_string()))
+                .unwrap()
+        }
+        Err(e) => e.into_response(),
+    }
+}
+
+/// DELETE /api/tokens/:id/permanent - Permanently delete an access token
+pub async fn delete_access_token(
+    State(state): State<Arc<AppState>>,
+    Path(token_id): Path<i32>,
+    headers: HeaderMap,
+) -> Response {
+    let token = match extract_auth(&headers, &state.auth).await {
+        Some(t) => t,
+        None => return require_auth_response(),
+    };
+
+    match state.auth.delete_access_token(token_id, token.user_id).await {
+        Ok(()) => {
+            let json = serde_json::json!({
+                "message": "Token deleted permanently",
+                "id": token_id
+            });
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json.to_string()))
+                .unwrap()
+        }
+        Err(e) => e.into_response(),
+    }
+}
