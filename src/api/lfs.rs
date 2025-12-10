@@ -1028,7 +1028,8 @@ fn multipart_part_path(storage_path: &std::path::Path, oid: &str, part_num: u32)
         .join(format!("part_{:05}", part_num))
 }
 
-/// Handle multipart part upload - streams part to disk and returns ETag (SHA256 of part)
+/// Handle multipart part upload - streams part to disk FAST (no hashing during upload)
+/// Returns immediately with a dummy ETag. Hash verification happens at completion time.
 async fn handle_multipart_part_upload(
     state: Arc<AppState>,
     oid: &str,
@@ -1064,20 +1065,23 @@ async fn handle_multipart_part_upload(
     // Get part file path
     let part_path = multipart_part_path(&state.cas.storage_path(), oid, part_num);
 
-    // Stream body to part file and compute hash simultaneously
+    // Stream body to part file FAST - no hashing during upload!
+    // Hash verification happens at completion time on the assembled file.
     let body_stream = request.into_body();
 
-    match stream_to_file_with_hash(body_stream, &part_path).await {
-        Ok((size, part_hash)) => {
+    match stream_to_file_fast(body_stream, &part_path).await {
+        Ok(size) => {
             tracing::info!(
-                "Multipart part stored: oid={} part={} size={} hash={}",
-                oid, part_num, size, part_hash
+                "Multipart part stored: oid={} part={} size={}",
+                oid, part_num, size
             );
 
-            // Return the part hash as ETag (client needs this for completion)
+            // Return a dummy ETag - HF client doesn't actually verify part ETags,
+            // it just needs them for the completion request. We verify the full
+            // file hash at completion time which is what actually matters.
             Response::builder()
                 .status(StatusCode::OK)
-                .header("ETag", format!("\"{}\"", part_hash))
+                .header("ETag", format!("\"part{}\"", part_num))
                 .body(Body::empty())
                 .unwrap()
         }
